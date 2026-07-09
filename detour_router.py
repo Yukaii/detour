@@ -30,14 +30,19 @@ DEFAULT_ORIGIN = (45.50884, -73.58781)  # Place des Arts
 DEFAULT_DESTINATION = (45.53535, -73.62022)  # near Parc Martin-Luther-King
 
 CLASS_MULTIPLIERS = {
-    "separated_path": 0.55,
-    "protected_lane": 0.62,
-    "painted_bike_lane": 0.82,
+    "separated_path": 0.72,
+    "protected_lane": 0.78,
+    "painted_bike_lane": 0.90,
     "quiet_street": 1.00,
     "minor_mixed": 1.25,
-    "major_mixed": 2.60,
-    "high_speed_arterial": 3.35,
-    "unknown": 1.55,
+    "major_mixed": 2.10,
+    "high_speed_arterial": 2.85,
+    "unknown": 1.40,
+}
+
+ROUTE_STYLES = {
+    "shortest": {"stroke": "#ef4444", "stroke-width": 5, "stroke-opacity": 0.78},
+    "bike_path_first": {"stroke": "#2563eb", "stroke-width": 6, "stroke-opacity": 0.9},
 }
 
 
@@ -285,6 +290,7 @@ def build_feature(
     route_id: str,
     label: str,
     weight: str,
+    note: str = "",
 ) -> dict[str, Any]:
     summary = summarize_route(graph, route, weight)
     return {
@@ -293,12 +299,29 @@ def build_feature(
             "id": route_id,
             "label": label,
             "optimizer": weight,
+            "note": note,
+            **ROUTE_STYLES.get(route_id, {}),
             **summary,
         },
         "geometry": {
             "type": "LineString",
             "coordinates": route_points(graph, route, weight),
         },
+    }
+
+
+def marker_feature(point: tuple[float, float], marker_id: str, label: str, color: str) -> dict[str, Any]:
+    lat, lon = point
+    return {
+        "type": "Feature",
+        "properties": {
+            "id": marker_id,
+            "label": label,
+            "marker-color": color,
+            "marker-size": "medium",
+            "marker-symbol": "bicycle" if marker_id == "origin" else "circle",
+        },
+        "geometry": {"type": "Point", "coordinates": [lon, lat]},
     }
 
 
@@ -324,6 +347,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--graph-cache", default="", help="Optional GraphML cache path override.")
     parser.add_argument("--bbox-buffer-km", type=float, default=1.5, help="Buffer around the origin/destination bbox.")
     parser.add_argument(
+        "--max-detour-ratio",
+        type=float,
+        default=1.25,
+        help="Fallback if bike-path-first is more than this multiple of shortest distance. Use 0 to disable.",
+    )
+    parser.add_argument(
         "--place",
         default="",
         help="Optional full place query, e.g. 'Montréal, Québec, Canada'. Slower than route bbox.",
@@ -337,10 +366,24 @@ def main() -> None:
 
     shortest = route_between(graph, args.origin, args.destination, "shortest_cost")
     bike_path_first = route_between(graph, args.origin, args.destination, "bike_path_first_cost")
+    shortest_summary = summarize_route(graph, shortest, "shortest_cost")
+    comfort_summary = summarize_route(graph, bike_path_first, "bike_path_first_cost")
+    comfort_note = ""
+
+    if args.max_detour_ratio and comfort_summary["distance_m"] > shortest_summary["distance_m"] * args.max_detour_ratio:
+        comfort_note = (
+            f"Rejected original comfort route because it was "
+            f"{comfort_summary['distance_m'] / shortest_summary['distance_m']:.2f}x the shortest route; "
+            "showing shortest as fallback."
+        )
+        bike_path_first = shortest
+        comfort_summary = shortest_summary
 
     features = [
         build_feature(graph, shortest, "shortest", "Shortest Route", "shortest_cost"),
-        build_feature(graph, bike_path_first, "bike_path_first", "Bike Path First", "bike_path_first_cost"),
+        build_feature(graph, bike_path_first, "bike_path_first", "Bike Path First", "bike_path_first_cost", comfort_note),
+        marker_feature(args.origin, "origin", "Origin", "#111827"),
+        marker_feature(args.destination, "destination", "Destination", "#16a34a"),
     ]
 
     output_dir = Path(args.output_dir)
@@ -348,13 +391,15 @@ def main() -> None:
     write_geojson(output_dir / "shortest.geojson", [features[0]])
     write_geojson(output_dir / "bike_path_first.geojson", [features[1]])
 
-    for feature in features:
+    for feature in features[:2]:
         props = feature["properties"]
         print(
             f"{props['label']}: {props['distance_m']} m, "
             f"comfort {props['comfort_score']}/100, "
             f"breakdown {props['infrastructure_breakdown']}"
         )
+        if props.get("note"):
+            print(f"  note: {props['note']}")
     print(f"Wrote GeoJSON to {output_dir.resolve()}")
 
 

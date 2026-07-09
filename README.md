@@ -26,6 +26,12 @@ python detour_router.py \
   --destination "45.53535,-73.62022"
 ```
 
+Allow a more aggressive comfort detour:
+
+```bash
+python detour_router.py --max-detour-ratio 1.5
+```
+
 Outputs:
 
 - `routes/route_comparison.geojson`
@@ -33,6 +39,13 @@ Outputs:
 - `routes/bike_path_first.geojson`
 
 Open the GeoJSON in geojson.io, QGIS, or any map viewer to visually compare the route shapes.
+
+In geojson.io, the combined comparison file includes:
+
+- red line: shortest route
+- blue line: bike-path-first route
+- black marker: origin
+- green marker: destination
 
 ## Tuning
 
@@ -56,3 +69,4 @@ Higher multipliers penalize stressful riding:
 - The default graph query uses a route-sized bounding box for faster iteration.
 - Pass `--place "Montréal, Québec, Canada"` to fetch a broader Montréal graph, but expect a slower first run.
 - OSMnx caching is enabled, and the graph is also saved under `data/` using a cache name derived from the route bounds. Use `--graph-cache path/to/file.graphml` if you want to pin or reuse a specific graph.
+- `--max-detour-ratio` prevents the comfort route from becoming an absurd sightseeing route. Set it to `0` to disable that fallback while tuning raw weights.
