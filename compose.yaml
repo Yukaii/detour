@@ -1,0 +1,16 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8001:8001"
+    environment:
+      DETOUR_CORS_ORIGINS: ${DETOUR_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      DETOUR_ROUTE_CACHE_TTL_SECONDS: ${DETOUR_ROUTE_CACHE_TTL_SECONDS:-60}
+      DETOUR_RATE_LIMIT_PER_MINUTE: ${DETOUR_RATE_LIMIT_PER_MINUTE:-30}
+    volumes:
+      - detour-data:/app/data
+      - detour-cache:/app/cache
+
+volumes:
+  detour-data:
+  detour-cache:

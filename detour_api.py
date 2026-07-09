@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import json
+import logging
+import os
+import time
+import uuid
+from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
+from threading import Lock
 from types import SimpleNamespace
+from typing import Any, Callable
+from urllib.error import URLError
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from detour_router import (
     DEFAULT_BIXI_GBFS_URL,
@@ -21,12 +33,117 @@ from detour_router import (
 )
 
 
-app = FastAPI(title="Detour API", version="0.1.0")
+logger = logging.getLogger("detour.api")
+
+
+def env_int(name: str, default: int, minimum: int = 1) -> int:
+    value = int(os.getenv(name, str(default)))
+    if value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}.")
+    return value
+
+
+@dataclass(frozen=True)
+class Settings:
+    cors_origins: tuple[str, ...]
+    route_cache_ttl_seconds: int
+    rate_limit_per_minute: int
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        origins = tuple(
+            origin.strip()
+            for origin in os.getenv("DETOUR_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",")
+            if origin.strip()
+        )
+        return cls(
+            cors_origins=origins,
+            route_cache_ttl_seconds=env_int("DETOUR_ROUTE_CACHE_TTL_SECONDS", 60),
+            rate_limit_per_minute=env_int("DETOUR_RATE_LIMIT_PER_MINUTE", 30),
+        )
+
+
+@dataclass
+class CacheEntry:
+    value: dict[str, Any]
+    expires_at: float
+
+
+class TtlCache:
+    def __init__(self) -> None:
+        self._entries: dict[tuple[Any, ...], CacheEntry] = {}
+        self._lock = Lock()
+
+    def get_or_set(self, key: tuple[Any, ...], ttl_seconds: int, factory: Callable[[], dict[str, Any]]) -> tuple[dict[str, Any], bool]:
+        now = time.monotonic()
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry and entry.expires_at > now:
+                return entry.value, True
+            value = factory()
+            self._entries[key] = CacheEntry(value=value, expires_at=now + ttl_seconds)
+            return value, False
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: FastAPI, requests_per_minute: int) -> None:
+        super().__init__(app)
+        self.requests_per_minute = requests_per_minute
+        self._requests: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = Lock()
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if request.url.path in {"/health", "/ready"}:
+            return await call_next(request)
+        client = request.client.host if request.client else "unknown"
+        now = time.monotonic()
+        with self._lock:
+            timestamps = self._requests[client]
+            while timestamps and timestamps[0] <= now - 60:
+                timestamps.popleft()
+            if len(timestamps) >= self.requests_per_minute:
+                retry_after = max(1, int(60 - (now - timestamps[0])))
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Rate limit exceeded. Try again shortly."},
+                    headers={"Retry-After": str(retry_after)},
+                )
+            timestamps.append(now)
+        return await call_next(request)
+
+
+class RequestLogMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+        started_at = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 1)
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            json.dumps(
+                {
+                    "event": "request_completed",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                }
+            )
+        )
+        return response
+
+
+settings = Settings.from_env()
+route_cache = TtlCache()
+app = FastAPI(title="Detour API", version="0.2.0")
+app.add_middleware(RateLimitMiddleware, requests_per_minute=settings.rate_limit_per_minute)
+app.add_middleware(RequestLogMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origins=list(settings.cors_origins),
     allow_methods=["GET"],
-    allow_headers=[],
+    allow_headers=["X-Request-ID"],
 )
 
 
@@ -64,9 +181,35 @@ def parse_point(value: str, field_name: str) -> tuple[float, float]:
         raise HTTPException(status_code=422, detail=f"Invalid {field_name}: {error}") from error
 
 
+def bixi_response(
+    origin: tuple[float, float],
+    destination: tuple[float, float],
+    bike_preference: str,
+    max_walk_minutes: float,
+    options: int,
+) -> dict[str, Any]:
+    args = router_args(origin, destination, bike_preference, max_walk_minutes)
+    bike_graph, walk_graph = graphs_for_route(origin, destination)
+    results = bixi_route_options(args, bike_graph, walk_graph, option_limit=options)
+    return {
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "mode": "bixi",
+        "origin": {"coordinates": [origin[1], origin[0]]},
+        "destination": {"coordinates": [destination[1], destination[0]]},
+        "bike_preference": bike_preference,
+        "max_walk_minutes": max_walk_minutes,
+        "options": [bixi_option_payload(result, bike_graph, walk_graph) for result in results],
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "detour-api"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    return {"status": "ready", "service": "detour-api"}
 
 
 @app.get("/v1/routes/bixi")
@@ -76,23 +219,24 @@ def bixi_routes(
     bike_preference: str = Query(default="any", pattern="^(any|ebike|regular)$"),
     max_walk_minutes: float = Query(default=15, gt=0, le=30),
     options: int = Query(default=3, ge=1, le=5),
-) -> dict:
+) -> JSONResponse:
     parsed_origin = parse_point(origin, "origin")
     parsed_destination = parse_point(destination, "destination")
-    args = router_args(parsed_origin, parsed_destination, bike_preference, max_walk_minutes)
-    bike_graph, walk_graph = graphs_for_route(parsed_origin, parsed_destination)
+    cache_key = (parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options)
 
     try:
-        results = bixi_route_options(args, bike_graph, walk_graph, option_limit=options)
-    except RuntimeError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+        payload, cache_hit = route_cache.get_or_set(
+            cache_key,
+            settings.route_cache_ttl_seconds,
+            lambda: bixi_response(parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options),
+        )
+    except (RuntimeError, TimeoutError, URLError) as error:
+        raise HTTPException(status_code=503, detail=f"Routing data is temporarily unavailable: {error}") from error
 
-    return {
-        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "mode": "bixi",
-        "origin": {"coordinates": [parsed_origin[1], parsed_origin[0]]},
-        "destination": {"coordinates": [parsed_destination[1], parsed_destination[0]]},
-        "bike_preference": bike_preference,
-        "max_walk_minutes": max_walk_minutes,
-        "options": [bixi_option_payload(result, bike_graph, walk_graph) for result in results],
-    }
+    return JSONResponse(
+        content=payload,
+        headers={
+            "Cache-Control": f"private, max-age={settings.route_cache_ttl_seconds}",
+            "X-Detour-Cache": "HIT" if cache_hit else "MISS",
+        },
+    )

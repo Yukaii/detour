@@ -85,6 +85,14 @@ Run the automated checks with:
 .venv/bin/python -m pytest -q
 ```
 
+For a single-container deployment, use:
+
+```bash
+docker compose up --build
+```
+
+See [OPERATIONS.md](/Users/yukai/Projects/Personal/detour/OPERATIONS.md) for configuration, operational boundaries, and the work still required before a multi-instance public deployment.
+
 In geojson.io, the combined comparison file includes:
 
 - red line: shortest route
@@ -122,10 +130,9 @@ The router is a routing experiment, not yet a production navigation backend. Its
 
 Current limitations:
 
-- BIXI walking legs use straight-line distance, not a pedestrian routing graph. Walking time can therefore be optimistic, and a selected station may involve an awkward crossing or barrier.
 - BIXI station selection evaluates only the locally best pickup and dropoff candidates (`--station-candidate-limit`, default `6`). A slightly farther station with a materially better bike route may be missed.
 - Comfort depends on OpenStreetMap tag coverage and does not yet model slope, construction, seasonal closures, traffic volume, road width, intersection stress, or rider-specific preferences.
-- BIXI availability is live when the CLI runs, but the generated GeoJSON is a snapshot. It does not refresh itself and currently carries no fetch timestamp.
+- BIXI availability is live when the CLI/API runs, but the generated GeoJSON is a snapshot. API responses provide generation and station timestamps when GBFS supplies them, but clients still need to refresh.
 - There are no automated routing tests or calibrated rider-feedback dataset yet. A `100/100` comfort score means the route best matches the current heuristic; it is not a validated safety or rider-satisfaction claim.
 
 Recommended backend sequence:
