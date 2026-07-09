@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import urllib.request
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ MONTREAL_BBOX = {
 
 DEFAULT_ORIGIN = (45.50884, -73.58781)  # Place des Arts
 DEFAULT_DESTINATION = (45.53535, -73.62022)  # near Parc Martin-Luther-King
+DEFAULT_BIXI_GBFS_URL = "https://gbfs.velobixi.com/gbfs/gbfs.json"
+WALKING_SPEED_M_PER_MIN = 80
 
 CLASS_MULTIPLIERS = {
     "separated_path": 0.72,
@@ -43,6 +46,9 @@ CLASS_MULTIPLIERS = {
 ROUTE_STYLES = {
     "shortest": {"stroke": "#ef4444", "stroke-width": 5, "stroke-opacity": 0.78},
     "bike_path_first": {"stroke": "#2563eb", "stroke-width": 6, "stroke-opacity": 0.9},
+    "bixi_bike": {"stroke": "#2563eb", "stroke-width": 6, "stroke-opacity": 0.9},
+    "walk_to_pickup": {"stroke": "#111827", "stroke-width": 3, "stroke-opacity": 0.7, "stroke-dasharray": "4,4"},
+    "walk_to_destination": {"stroke": "#111827", "stroke-width": 3, "stroke-opacity": 0.7, "stroke-dasharray": "4,4"},
 }
 
 
@@ -223,6 +229,10 @@ def route_points(graph: nx.MultiDiGraph, route: list[int], weight: str) -> list[
     return points
 
 
+def straight_line_points(start: tuple[float, float], end: tuple[float, float]) -> list[list[float]]:
+    return [[start[1], start[0]], [end[1], end[0]]]
+
+
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     radius_m = 6_371_000
     phi1 = math.radians(lat1)
@@ -238,6 +248,125 @@ def nearest_node(graph: nx.MultiDiGraph, point: tuple[float, float]) -> int:
     return min(
         graph.nodes,
         key=lambda node: haversine_m(lat, lon, float(graph.nodes[node]["y"]), float(graph.nodes[node]["x"])),
+    )
+
+
+def fetch_json(url: str) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers={"User-Agent": "detour-router/0.1"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def gbfs_feed_urls(discovery_url: str, language: str) -> dict[str, str]:
+    discovery = fetch_json(discovery_url)
+    data = discovery.get("data", {})
+    feeds = data.get(language) or data.get("en") or next(iter(data.values()))
+    return {feed["name"]: feed["url"] for feed in feeds.get("feeds", [])}
+
+
+def load_bixi_stations(discovery_url: str, language: str) -> list[dict[str, Any]]:
+    urls = gbfs_feed_urls(discovery_url, language)
+    missing = {"station_information", "station_status"} - set(urls)
+    if missing:
+        raise RuntimeError(f"BIXI GBFS feed is missing required files: {', '.join(sorted(missing))}")
+
+    info_data = fetch_json(urls["station_information"])
+    status_data = fetch_json(urls["station_status"])
+    status_by_id = {station["station_id"]: station for station in status_data["data"]["stations"]}
+
+    stations: list[dict[str, Any]] = []
+    for info in info_data["data"]["stations"]:
+        status = status_by_id.get(info["station_id"])
+        if not status:
+            continue
+        station = {**info, **status}
+        station["point"] = (float(station["lat"]), float(station["lon"]))
+        station["available_regular_bikes"] = max(
+            0,
+            int(station.get("num_bikes_available", 0)) - int(station.get("num_ebikes_available", 0)),
+        )
+        stations.append(station)
+    return stations
+
+
+def active_for_pickup(station: dict[str, Any], bike_preference: str) -> bool:
+    if not station.get("is_installed") or not station.get("is_renting"):
+        return False
+    if bike_preference == "ebike":
+        return int(station.get("num_ebikes_available", 0)) > 0
+    if bike_preference == "regular":
+        return int(station.get("available_regular_bikes", 0)) > 0
+    return int(station.get("num_bikes_available", 0)) > 0
+
+
+def active_for_dropoff(station: dict[str, Any]) -> bool:
+    return bool(station.get("is_installed") and station.get("is_returning") and int(station.get("num_docks_available", 0)) > 0)
+
+
+def station_availability_penalty(station: dict[str, Any], kind: str, bike_preference: str) -> float:
+    if kind == "pickup":
+        if bike_preference == "ebike":
+            available = int(station.get("num_ebikes_available", 0))
+        elif bike_preference == "regular":
+            available = int(station.get("available_regular_bikes", 0))
+        else:
+            available = int(station.get("num_bikes_available", 0))
+    else:
+        available = int(station.get("num_docks_available", 0))
+
+    if available <= 1:
+        return 500
+    if available <= 3:
+        return 220
+    if available <= 6:
+        return 80
+    return 0
+
+
+def station_candidates(
+    stations: list[dict[str, Any]],
+    point: tuple[float, float],
+    max_walk_m: float,
+    kind: str,
+    bike_preference: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for station in stations:
+        if kind == "pickup" and not active_for_pickup(station, bike_preference):
+            continue
+        if kind == "dropoff" and not active_for_dropoff(station):
+            continue
+        distance_m = haversine_m(point[0], point[1], station["point"][0], station["point"][1])
+        if distance_m > max_walk_m:
+            continue
+        candidate = dict(station)
+        candidate["walk_distance_m"] = round(distance_m)
+        candidate["station_score"] = distance_m + station_availability_penalty(station, kind, bike_preference)
+        candidates.append(candidate)
+    return sorted(candidates, key=lambda station: station["station_score"])[:limit]
+
+
+def nearest_station_snapshot(
+    stations: list[dict[str, Any]],
+    point: tuple[float, float],
+    kind: str,
+    bike_preference: str,
+    limit: int = 5,
+) -> str:
+    rows = []
+    for station in stations:
+        distance_m = round(haversine_m(point[0], point[1], station["point"][0], station["point"][1]))
+        if kind == "pickup":
+            availability = f"{station.get('num_bikes_available', 0)} bikes, {station.get('num_ebikes_available', 0)} e-bikes"
+            usable = active_for_pickup(station, bike_preference)
+        else:
+            availability = f"{station.get('num_docks_available', 0)} docks"
+            usable = active_for_dropoff(station)
+        rows.append((distance_m, station["name"], availability, usable))
+    return "; ".join(
+        f"{name} ({distance_m} m, {availability}, {'usable' if usable else 'not usable'})"
+        for distance_m, name, availability, usable in sorted(rows)[:limit]
     )
 
 
@@ -325,6 +454,45 @@ def marker_feature(point: tuple[float, float], marker_id: str, label: str, color
     }
 
 
+def station_marker_feature(station: dict[str, Any], marker_id: str, label: str, color: str) -> dict[str, Any]:
+    return {
+        "type": "Feature",
+        "properties": {
+            "id": marker_id,
+            "label": label,
+            "station_id": station["station_id"],
+            "station_name": station["name"],
+            "available_bikes": int(station.get("num_bikes_available", 0)),
+            "available_regular_bikes": int(station.get("available_regular_bikes", 0)),
+            "available_ebikes": int(station.get("num_ebikes_available", 0)),
+            "available_docks": int(station.get("num_docks_available", 0)),
+            "walk_distance_m": station.get("walk_distance_m"),
+            "marker-color": color,
+            "marker-size": "large",
+            "marker-symbol": "bicycle",
+        },
+        "geometry": {"type": "Point", "coordinates": [station["point"][1], station["point"][0]]},
+    }
+
+
+def line_feature(
+    points: list[list[float]],
+    route_id: str,
+    label: str,
+    properties: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "Feature",
+        "properties": {
+            "id": route_id,
+            "label": label,
+            **ROUTE_STYLES.get(route_id, {}),
+            **(properties or {}),
+        },
+        "geometry": {"type": "LineString", "coordinates": points},
+    }
+
+
 def route_between(graph: nx.MultiDiGraph, origin: tuple[float, float], destination: tuple[float, float], weight: str) -> list[int]:
     start = nearest_node(graph, origin)
     end = nearest_node(graph, destination)
@@ -339,31 +507,7 @@ def write_geojson(path: Path, features: list[dict[str, Any]]) -> None:
     )
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Compare shortest and bike-path-first OSM routes in Montréal.")
-    parser.add_argument("--origin", type=parse_lat_lon, default=DEFAULT_ORIGIN, help="Origin as 'lat,lon'.")
-    parser.add_argument("--destination", type=parse_lat_lon, default=DEFAULT_DESTINATION, help="Destination as 'lat,lon'.")
-    parser.add_argument("--output-dir", default="routes", help="Directory for GeoJSON output.")
-    parser.add_argument("--graph-cache", default="", help="Optional GraphML cache path override.")
-    parser.add_argument("--bbox-buffer-km", type=float, default=1.5, help="Buffer around the origin/destination bbox.")
-    parser.add_argument(
-        "--max-detour-ratio",
-        type=float,
-        default=1.25,
-        help="Fallback if bike-path-first is more than this multiple of shortest distance. Use 0 to disable.",
-    )
-    parser.add_argument(
-        "--place",
-        default="",
-        help="Optional full place query, e.g. 'Montréal, Québec, Canada'. Slower than route bbox.",
-    )
-    return parser
-
-
-def main() -> None:
-    args = build_arg_parser().parse_args()
-    graph = load_graph(args)
-
+def run_own_bike(args: argparse.Namespace, graph: nx.MultiDiGraph) -> None:
     shortest = route_between(graph, args.origin, args.destination, "shortest_cost")
     bike_path_first = route_between(graph, args.origin, args.destination, "bike_path_first_cost")
     shortest_summary = summarize_route(graph, shortest, "shortest_cost")
@@ -377,7 +521,6 @@ def main() -> None:
             "showing shortest as fallback."
         )
         bike_path_first = shortest
-        comfort_summary = shortest_summary
 
     features = [
         build_feature(graph, shortest, "shortest", "Shortest Route", "shortest_cost"),
@@ -401,6 +544,160 @@ def main() -> None:
         if props.get("note"):
             print(f"  note: {props['note']}")
     print(f"Wrote GeoJSON to {output_dir.resolve()}")
+
+
+def best_bixi_route(args: argparse.Namespace, graph: nx.MultiDiGraph) -> dict[str, Any]:
+    stations = load_bixi_stations(args.bixi_gbfs_url, args.gbfs_language)
+    max_walk_m = args.max_walk_minutes * WALKING_SPEED_M_PER_MIN
+    pickups = station_candidates(stations, args.origin, max_walk_m, "pickup", args.bike_preference, args.station_candidate_limit)
+    dropoffs = station_candidates(stations, args.destination, max_walk_m, "dropoff", args.bike_preference, args.station_candidate_limit)
+
+    if not pickups:
+        nearby = nearest_station_snapshot(stations, args.origin, "pickup", args.bike_preference)
+        raise RuntimeError(
+            f"No usable BIXI pickup stations within {args.max_walk_minutes} minutes of origin. "
+            f"Nearest stations: {nearby}"
+        )
+    if not dropoffs:
+        nearby = nearest_station_snapshot(stations, args.destination, "dropoff", args.bike_preference)
+        raise RuntimeError(
+            f"No usable BIXI dropoff stations within {args.max_walk_minutes} minutes of destination. "
+            f"Nearest stations: {nearby}"
+        )
+
+    best: dict[str, Any] | None = None
+    for pickup in pickups:
+        for dropoff in dropoffs:
+            try:
+                route = route_between(graph, pickup["point"], dropoff["point"], "bike_path_first_cost")
+            except nx.NetworkXNoPath:
+                continue
+            summary = summarize_route(graph, route, "bike_path_first_cost")
+            total_score = pickup["station_score"] + dropoff["station_score"] + float(summary["weighted_cost"])
+            total_walk_m = pickup["walk_distance_m"] + dropoff["walk_distance_m"]
+            result = {
+                "pickup": pickup,
+                "dropoff": dropoff,
+                "route": route,
+                "summary": summary,
+                "total_score": total_score,
+                "total_walk_m": total_walk_m,
+            }
+            if best is None or result["total_score"] < best["total_score"]:
+                best = result
+
+    if best is None:
+        raise RuntimeError("Could not route between any BIXI pickup/dropoff candidate pair.")
+    return best
+
+
+def run_bixi(args: argparse.Namespace, graph: nx.MultiDiGraph) -> None:
+    result = best_bixi_route(args, graph)
+    pickup = result["pickup"]
+    dropoff = result["dropoff"]
+    bike_summary = result["summary"]
+
+    walk_to_pickup_m = pickup["walk_distance_m"]
+    walk_to_destination_m = dropoff["walk_distance_m"]
+    total_minutes = round(
+        walk_to_pickup_m / WALKING_SPEED_M_PER_MIN
+        + bike_summary["distance_m"] / 250
+        + walk_to_destination_m / WALKING_SPEED_M_PER_MIN
+    )
+
+    bike_props = {
+        "pickup_station": pickup["name"],
+        "dropoff_station": dropoff["name"],
+        "walk_to_pickup_m": walk_to_pickup_m,
+        "walk_to_destination_m": walk_to_destination_m,
+        "total_walk_m": result["total_walk_m"],
+        "estimated_total_minutes": total_minutes,
+        **bike_summary,
+    }
+    features = [
+        line_feature(
+            straight_line_points(args.origin, pickup["point"]),
+            "walk_to_pickup",
+            "Walk to BIXI pickup",
+            {"distance_m": walk_to_pickup_m},
+        ),
+        line_feature(
+            route_points(graph, result["route"], "bike_path_first_cost"),
+            "bixi_bike",
+            "BIXI bike leg",
+            bike_props,
+        ),
+        line_feature(
+            straight_line_points(dropoff["point"], args.destination),
+            "walk_to_destination",
+            "Walk to destination",
+            {"distance_m": walk_to_destination_m},
+        ),
+        marker_feature(args.origin, "origin", "Origin", "#111827"),
+        station_marker_feature(pickup, "bixi_pickup", f"Pickup: {pickup['name']}", "#2563eb"),
+        station_marker_feature(dropoff, "bixi_dropoff", f"Dropoff: {dropoff['name']}", "#16a34a"),
+        marker_feature(args.destination, "destination", "Destination", "#16a34a"),
+    ]
+
+    output_dir = Path(args.output_dir)
+    write_geojson(output_dir / "bixi_route.geojson", features)
+    print(f"BIXI route: {total_minutes} min estimated total")
+    print(
+        f"Pickup: {pickup['name']} - {pickup['walk_distance_m']} m walk, "
+        f"{pickup.get('num_bikes_available', 0)} total bikes, "
+        f"{pickup.get('available_regular_bikes', 0)} regular, "
+        f"{pickup.get('num_ebikes_available', 0)} e-bikes"
+    )
+    print(
+        f"Dropoff: {dropoff['name']} - {dropoff['walk_distance_m']} m walk, "
+        f"{dropoff.get('num_docks_available', 0)} docks"
+    )
+    print(
+        f"Bike leg: {bike_summary['distance_m']} m, comfort {bike_summary['comfort_score']}/100, "
+        f"breakdown {bike_summary['infrastructure_breakdown']}"
+    )
+    print(f"Wrote GeoJSON to {(output_dir / 'bixi_route.geojson').resolve()}")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Compare shortest and bike-path-first OSM routes in Montréal.")
+    parser.add_argument("--mode", choices=["own-bike", "bixi"], default="own-bike", help="Route mode.")
+    parser.add_argument("--origin", type=parse_lat_lon, default=DEFAULT_ORIGIN, help="Origin as 'lat,lon'.")
+    parser.add_argument("--destination", type=parse_lat_lon, default=DEFAULT_DESTINATION, help="Destination as 'lat,lon'.")
+    parser.add_argument("--output-dir", default="routes", help="Directory for GeoJSON output.")
+    parser.add_argument("--graph-cache", default="", help="Optional GraphML cache path override.")
+    parser.add_argument("--bbox-buffer-km", type=float, default=1.5, help="Buffer around the origin/destination bbox.")
+    parser.add_argument(
+        "--max-detour-ratio",
+        type=float,
+        default=1.25,
+        help="Fallback if bike-path-first is more than this multiple of shortest distance. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--place",
+        default="",
+        help="Optional full place query, e.g. 'Montréal, Québec, Canada'. Slower than route bbox.",
+    )
+    parser.add_argument(
+        "--bike-preference",
+        choices=["any", "ebike", "regular"],
+        default="any",
+        help="BIXI bike availability filter.",
+    )
+    parser.add_argument("--max-walk-minutes", type=float, default=8, help="Max walk time to BIXI stations.")
+    parser.add_argument("--station-candidate-limit", type=int, default=6, help="BIXI candidates to evaluate per endpoint.")
+    parser.add_argument("--bixi-gbfs-url", default=DEFAULT_BIXI_GBFS_URL, help="BIXI GBFS discovery URL.")
+    parser.add_argument("--gbfs-language", default="en", help="GBFS language key to read from discovery feed.")
+    return parser
+
+
+def main() -> None:
+    args = build_arg_parser().parse_args()
+    graph = load_graph(args)
+    if args.mode == "bixi":
+        run_bixi(args, graph)
+    else:
+        run_own_bike(args, graph)
 
 
 if __name__ == "__main__":
