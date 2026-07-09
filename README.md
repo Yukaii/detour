@@ -64,6 +64,27 @@ Then open [http://localhost:8000/preview/](http://localhost:8000/preview/). The 
 
 You can still open the GeoJSON in geojson.io, QGIS, or another map viewer to inspect raw data.
 
+## HTTP API
+
+Run the API locally:
+
+```bash
+.venv/bin/uvicorn detour_api:app --reload --port 8001
+```
+
+Endpoints:
+
+- `GET /health`
+- `GET /v1/routes/bixi?origin=45.50884,-73.58781&destination=45.53535,-73.62022&bike_preference=any&max_walk_minutes=15&options=3`
+
+The BIXI endpoint returns up to five ranked station-pair options. Each option includes pedestrian-network geometry for both walking legs, bike-leg geometry and comfort data, live station counts, station-availability timestamps when supplied by GBFS, and a response generation timestamp.
+
+Run the automated checks with:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
 In geojson.io, the combined comparison file includes:
 
 - red line: shortest route
@@ -114,6 +135,8 @@ Recommended backend sequence:
 3. Add data timestamps, structured errors, and an API boundary before connecting a real frontend.
 4. Build a small set of known Montréal trips, manually review the routes, and tune `CLASS_MULTIPLIERS` against that evidence.
 
+The first three items above are now implemented in the CLI/API route path. The remaining validation work needs real rider feedback and operational data; it cannot be completed purely by code changes.
+
 ## Notes
 
 - The default graph query uses a route-sized bounding box for faster iteration.
@@ -121,4 +144,4 @@ Recommended backend sequence:
 - OSMnx caching is enabled, and the graph is also saved under `data/` using a cache name derived from the route bounds. Use `--graph-cache path/to/file.graphml` if you want to pin or reuse a specific graph.
 - `--max-detour-ratio` prevents the comfort route from becoming an absurd sightseeing route. Set it to `0` to disable that fallback while tuning raw weights.
 - BIXI mode uses the public GBFS discovery feed at `https://gbfs.velobixi.com/gbfs/gbfs.json`.
-- `--max-walk-minutes` defaults to `8`, because live BIXI availability can make the closest station unusable.
+- `--max-walk-minutes` defaults to `15`. The routing engine uses real pedestrian-network distance, and live BIXI availability can make the closest station unusable.
