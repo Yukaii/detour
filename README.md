@@ -95,6 +95,25 @@ Higher multipliers penalize stressful riding:
 - `high_speed_arterial`
 - `unknown`
 
+## MVP limitations and next backend work
+
+The router is a routing experiment, not yet a production navigation backend. Its comfort model is intentionally a transparent OSM-tag heuristic rather than a machine-learning model: road tags are classified into infrastructure types, and each type receives a routing multiplier.
+
+Current limitations:
+
+- BIXI walking legs use straight-line distance, not a pedestrian routing graph. Walking time can therefore be optimistic, and a selected station may involve an awkward crossing or barrier.
+- BIXI station selection evaluates only the locally best pickup and dropoff candidates (`--station-candidate-limit`, default `6`). A slightly farther station with a materially better bike route may be missed.
+- Comfort depends on OpenStreetMap tag coverage and does not yet model slope, construction, seasonal closures, traffic volume, road width, intersection stress, or rider-specific preferences.
+- BIXI availability is live when the CLI runs, but the generated GeoJSON is a snapshot. It does not refresh itself and currently carries no fetch timestamp.
+- There are no automated routing tests or calibrated rider-feedback dataset yet. A `100/100` comfort score means the route best matches the current heuristic; it is not a validated safety or rider-satisfaction claim.
+
+Recommended backend sequence:
+
+1. Route the walking legs on a pedestrian graph and use those distances in BIXI station scoring.
+2. Return two or three ranked BIXI station-pair options instead of a single result.
+3. Add data timestamps, structured errors, and an API boundary before connecting a real frontend.
+4. Build a small set of known Montréal trips, manually review the routes, and tune `CLASS_MULTIPLIERS` against that evidence.
+
 ## Notes
 
 - The default graph query uses a route-sized bounding box for faster iteration.
