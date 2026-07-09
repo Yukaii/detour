@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Detour route preview</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIINfQ2V4bM5HFTD4w4YNOd5z4P7rXtZxw="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main>
+      <aside class="panel">
+        <div class="brand">
+          <p class="eyebrow">Montreal bike routing</p>
+          <h1>Detour</h1>
+        </div>
+
+        <nav class="route-switcher" aria-label="Route view">
+          <button class="route-button active" type="button" data-file="route_comparison.geojson">
+            Own bike
+          </button>
+          <button class="route-button" type="button" data-file="bixi_route.geojson">
+            BIXI
+          </button>
+        </nav>
+
+        <section id="summary" class="summary" aria-live="polite">
+          <p class="empty-state">Loading route data...</p>
+        </section>
+
+        <p class="hint">Click a route or station on the map for details.</p>
+      </aside>
+      <div id="map" aria-label="Interactive Montreal route map"></div>
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script src="app.js"></script>
+  </body>
+</html>

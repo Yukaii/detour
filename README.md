@@ -52,7 +52,17 @@ Outputs:
 - `routes/bike_path_first.geojson`
 - `routes/bixi_route.geojson` when using `--mode bixi`
 
-Open the GeoJSON in geojson.io, QGIS, or any map viewer to visually compare the route shapes.
+## Local map preview
+
+After generating a route, start a local server from the project root:
+
+```bash
+python3 -m http.server 8000
+```
+
+Then open [http://localhost:8000/preview/](http://localhost:8000/preview/). The viewer has an Own bike/BIXI switch, route summaries, and clickable station availability details. Refresh after rerunning the router to see a new live BIXI result.
+
+You can still open the GeoJSON in geojson.io, QGIS, or another map viewer to inspect raw data.
 
 In geojson.io, the combined comparison file includes:
 
