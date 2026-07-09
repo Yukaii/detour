@@ -29,3 +29,4 @@ The supplied container deliberately runs one Uvicorn worker. The graph cache, re
 - Schedule graph refreshes and validate refreshed data before promotion.
 - Retain route request telemetry only with a documented privacy policy and data-retention limit.
 - Calibrate the comfort model with reviewed Montréal routes and rider feedback.
+- Validate maneuver generation against representative Montréal intersections before enabling voice guidance or automatic rerouting.

@@ -222,30 +222,147 @@ def load_graph(args: argparse.Namespace, network_type: str = "bike") -> nx.Multi
     return graph
 
 
-def best_edge_data(graph: nx.MultiDiGraph, u: int, v: int, weight: str) -> dict[str, Any]:
+def best_edge(graph: nx.MultiDiGraph, u: int, v: int, weight: str) -> tuple[Any, dict[str, Any]]:
     edges = graph.get_edge_data(u, v)
     if not edges:
         raise RuntimeError(f"Route references missing edge {u}->{v}.")
-    return min(edges.values(), key=lambda data: float(data.get(weight, data.get("length", 1.0))))
+    return min(edges.items(), key=lambda item: float(item[1].get(weight, item[1].get("length", 1.0))))
+
+
+def best_edge_data(graph: nx.MultiDiGraph, u: int, v: int, weight: str) -> dict[str, Any]:
+    return best_edge(graph, u, v, weight)[1]
+
+
+def route_edge_sequence(graph: nx.MultiDiGraph, route: list[int], weight: str) -> list[tuple[int, int, Any, dict[str, Any]]]:
+    return [(u, v, *best_edge(graph, u, v, weight)) for u, v in zip(route[:-1], route[1:])]
+
+
+def edge_coordinates(graph: nx.MultiDiGraph, u: int, v: int, data: dict[str, Any]) -> list[list[float]]:
+    geometry = data.get("geometry")
+    if geometry is not None:
+        return [[float(lon), float(lat)] for lon, lat in geometry.coords]
+    return [
+        [float(graph.nodes[u]["x"]), float(graph.nodes[u]["y"])],
+        [float(graph.nodes[v]["x"]), float(graph.nodes[v]["y"])],
+    ]
 
 
 def route_points(graph: nx.MultiDiGraph, route: list[int], weight: str) -> list[list[float]]:
     points: list[list[float]] = []
-    for u, v in zip(route[:-1], route[1:]):
-        data = best_edge_data(graph, u, v, weight)
-        geometry = data.get("geometry")
-        if geometry is not None:
-            coords = [[float(lon), float(lat)] for lon, lat in geometry.coords]
-        else:
-            coords = [
-                [float(graph.nodes[u]["x"]), float(graph.nodes[u]["y"])],
-                [float(graph.nodes[v]["x"]), float(graph.nodes[v]["y"])],
-            ]
+    for u, v, _, data in route_edge_sequence(graph, route, weight):
+        coords = edge_coordinates(graph, u, v, data)
         if points and coords and points[-1] == coords[0]:
             points.extend(coords[1:])
         else:
             points.extend(coords)
     return points
+
+
+def bearing_degrees(start: list[float], end: list[float]) -> float:
+    lon1, lat1 = map(math.radians, start)
+    lon2, lat2 = map(math.radians, end)
+    delta_lon = lon2 - lon1
+    x = math.sin(delta_lon) * math.cos(lat2)
+    y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(delta_lon)
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
+def edge_bearings(coordinates: list[list[float]]) -> tuple[float, float]:
+    pairs = list(zip(coordinates[:-1], coordinates[1:]))
+    non_zero = [(start, end) for start, end in pairs if start != end]
+    if not non_zero:
+        return 0.0, 0.0
+    return bearing_degrees(*non_zero[0]), bearing_degrees(*non_zero[-1])
+
+
+def edge_street_name(data: dict[str, Any]) -> str:
+    name = data.get("name")
+    if isinstance(name, list):
+        name = name[0] if name else ""
+    return str(name) if name else "Unnamed path"
+
+
+def turn_direction(previous_bearing: float, current_bearing: float) -> str:
+    delta = (current_bearing - previous_bearing + 540) % 360 - 180
+    magnitude = abs(delta)
+    if magnitude <= 20:
+        return "continue"
+    if magnitude <= 45:
+        return "slight_right" if delta > 0 else "slight_left"
+    if magnitude <= 135:
+        return "right" if delta > 0 else "left"
+    return "uturn"
+
+
+def maneuver_instruction(maneuver: str, street_name: str, first: bool) -> str:
+    if first:
+        return f"Start on {street_name}"
+    verbs = {
+        "continue": "Continue onto",
+        "slight_right": "Keep slightly right onto",
+        "slight_left": "Keep slightly left onto",
+        "right": "Turn right onto",
+        "left": "Turn left onto",
+        "uturn": "Make a U-turn onto",
+    }
+    return f"{verbs[maneuver]} {street_name}"
+
+
+def route_maneuvers(graph: nx.MultiDiGraph, route: list[int], weight: str) -> list[dict[str, Any]]:
+    """Create compact turn instructions from the exact OSM edges selected for a route."""
+    edges = route_edge_sequence(graph, route, weight)
+    if not edges:
+        return []
+
+    groups: list[dict[str, Any]] = []
+    for u, v, key, data in edges:
+        coordinates = edge_coordinates(graph, u, v, data)
+        entry_bearing, exit_bearing = edge_bearings(coordinates)
+        street_name = edge_street_name(data)
+        length_m = float(data.get("length", 0.0))
+        if groups and groups[-1]["street_name"] == street_name:
+            groups[-1]["distance_m"] += length_m
+            groups[-1]["exit_bearing"] = exit_bearing
+            groups[-1]["edge_keys"].append(key)
+            continue
+
+        groups.append(
+            {
+                "street_name": street_name,
+                "distance_m": length_m,
+                "coordinate": coordinates[0],
+                "entry_bearing": entry_bearing,
+                "exit_bearing": exit_bearing,
+                "edge_keys": [key],
+            }
+        )
+
+    steps: list[dict[str, Any]] = []
+    for index, group in enumerate(groups):
+        maneuver = "continue" if index == 0 else turn_direction(groups[index - 1]["exit_bearing"], group["entry_bearing"])
+        steps.append(
+            {
+                "instruction": maneuver_instruction(maneuver, group["street_name"], first=index == 0),
+                "maneuver": "depart" if index == 0 else maneuver,
+                "street_name": group["street_name"],
+                "distance_m": round(group["distance_m"]),
+                "coordinate": group["coordinate"],
+                "edge_keys": group["edge_keys"],
+            }
+        )
+
+    final_coordinates = edge_coordinates(graph, edges[-1][0], edges[-1][1], edges[-1][3])
+    steps.append(
+        {
+            "instruction": "Arrive at destination",
+            "maneuver": "arrive",
+            "street_name": groups[-1]["street_name"],
+            "distance_m": 0,
+            "coordinate": final_coordinates[-1],
+            "edge_keys": [],
+        }
+    )
+    return steps
 
 
 def straight_line_points(start: tuple[float, float], end: tuple[float, float]) -> list[list[float]]:
@@ -609,14 +726,17 @@ def bixi_option_payload(
             "walk_to_pickup": {
                 "distance_m": pickup["walk_distance_m"],
                 "coordinates": route_points(walk_graph, pickup["walk_route"], "shortest_cost"),
+                "steps": route_maneuvers(walk_graph, pickup["walk_route"], "shortest_cost"),
             },
             "bike": {
                 **bike_summary,
                 "coordinates": route_points(bike_graph, result["route"], "bike_path_first_cost"),
+                "steps": route_maneuvers(bike_graph, result["route"], "bike_path_first_cost"),
             },
             "walk_to_destination": {
                 "distance_m": dropoff["walk_distance_m"],
                 "coordinates": route_points(walk_graph, dropoff["walk_route"], "shortest_cost"),
+                "steps": route_maneuvers(walk_graph, dropoff["walk_route"], "shortest_cost"),
             },
         },
     }

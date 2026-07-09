@@ -79,6 +79,8 @@ Endpoints:
 
 The BIXI endpoint returns up to five ranked station-pair options. Each option includes pedestrian-network geometry for both walking legs, bike-leg geometry and comfort data, live station counts, station-availability timestamps when supplied by GBFS, and a response generation timestamp.
 
+Every leg also includes `steps[]`, generated from the exact OSM edges selected by Détour. A step contains an instruction, maneuver type, street name, distance, coordinate, and the selected OSM edge keys. This is the contract for the future iOS turn-list, progress tracking, and voice-guidance UI; it does not delegate route selection to Apple or Google Maps.
+
 Run the automated checks with:
 
 ```bash
