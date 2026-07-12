@@ -95,6 +95,8 @@ docker compose up --build
 
 See [OPERATIONS.md](/Users/yukai/Projects/Personal/detour/OPERATIONS.md) for configuration, operational boundaries, and the work still required before a multi-instance public deployment.
 
+The public v1 API is intentionally limited to Montréal endpoints and trips of at most 35 km straight-line distance. This protects the graph downloader and persistent storage from arbitrary global requests.
+
 In geojson.io, the combined comparison file includes:
 
 - red line: shortest route

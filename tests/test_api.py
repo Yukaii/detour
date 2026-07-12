@@ -1,7 +1,10 @@
 import json
 
+import pytest
+from fastapi import HTTPException
+
 import detour_api
-from detour_api import TtlCache, bixi_routes, health
+from detour_api import TtlCache, bixi_routes, health, validate_route_request
 
 
 def test_health() -> None:
@@ -42,3 +45,17 @@ def test_bixi_endpoint_marks_cached_response(monkeypatch) -> None:
     assert first.headers["X-Detour-Cache"] == "MISS"
     assert second.headers["X-Detour-Cache"] == "HIT"
     assert json.loads(second.body) == {"options": [], "mode": "bixi"}
+
+
+def test_route_request_rejects_points_outside_montreal() -> None:
+    with pytest.raises(HTTPException, match="outside the Montréal service area"):
+        validate_route_request((43.6532, -79.3832), (45.53535, -73.62022))
+
+
+def test_route_request_accepts_montreal_trip() -> None:
+    validate_route_request((45.50884, -73.58781), (45.53535, -73.62022))
+
+
+def test_route_request_rejects_excessive_distance() -> None:
+    with pytest.raises(HTTPException, match="35 km maximum"):
+        validate_route_request((45.40, -73.99), (45.71, -73.47))

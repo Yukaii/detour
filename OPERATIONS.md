@@ -15,6 +15,29 @@ The API listens on `http://localhost:8001`. Docker volumes persist the downloade
 | `DETOUR_CORS_ORIGINS` | local preview origins | Comma-separated browser origins allowed to call the API. |
 | `DETOUR_ROUTE_CACHE_TTL_SECONDS` | `60` | Per-process cache lifetime for identical BIXI route requests. |
 | `DETOUR_RATE_LIMIT_PER_MINUTE` | `30` | Per-client request ceiling in the single API process. |
+| `DETOUR_MAX_ROUTE_DISTANCE_KM` | `35` | Maximum straight-line distance between route endpoints. |
+
+The v1 API accepts endpoints only inside the hard-coded Montréal service bounds. This prevents public requests from downloading arbitrary global OSM graphs and exhausting disk space. Expand the boundary deliberately as service coverage grows.
+
+## Fly.io deployment
+
+The included `fly.toml` runs one machine in Montréal (`yul`) and mounts a persistent volume at `/app/data`. The first route for uncached bounds may still be slow while OSM data is downloaded.
+
+```bash
+fly auth login
+fly apps create <unique-app-name>
+fly volumes create detour_data --region yul --size 3 -a <unique-app-name>
+fly deploy -a <unique-app-name>
+fly checks list -a <unique-app-name>
+```
+
+Set the production client origin before connecting a web frontend:
+
+```bash
+fly secrets set DETOUR_CORS_ORIGINS=https://your-client.example -a <unique-app-name>
+```
+
+The OSMnx HTTP cache remains ephemeral on Fly.io; the larger parsed GraphML files use the persistent data volume. Keep the machine count at one until cache and rate-limit state move to shared infrastructure.
 
 ## Deployment boundary
 

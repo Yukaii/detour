@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import time
 import uuid
@@ -26,6 +27,7 @@ from detour_router import (
     DEFAULT_BIXI_GBFS_URL,
     DEFAULT_DESTINATION,
     DEFAULT_ORIGIN,
+    MONTREAL_BBOX,
     bixi_option_payload,
     bixi_route_options,
     load_graph,
@@ -48,6 +50,7 @@ class Settings:
     cors_origins: tuple[str, ...]
     route_cache_ttl_seconds: int
     rate_limit_per_minute: int
+    max_route_distance_km: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -60,6 +63,7 @@ class Settings:
             cors_origins=origins,
             route_cache_ttl_seconds=env_int("DETOUR_ROUTE_CACHE_TTL_SECONDS", 60),
             rate_limit_per_minute=env_int("DETOUR_RATE_LIMIT_PER_MINUTE", 30),
+            max_route_distance_km=env_int("DETOUR_MAX_ROUTE_DISTANCE_KM", 35),
         )
 
 
@@ -181,6 +185,30 @@ def parse_point(value: str, field_name: str) -> tuple[float, float]:
         raise HTTPException(status_code=422, detail=f"Invalid {field_name}: {error}") from error
 
 
+def distance_km(first: tuple[float, float], second: tuple[float, float]) -> float:
+    lat1, lon1 = map(math.radians, first)
+    lat2, lon2 = map(math.radians, second)
+    delta_lat = lat2 - lat1
+    delta_lon = lon2 - lon1
+    haversine = math.sin(delta_lat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+    return 6371.0088 * 2 * math.asin(math.sqrt(haversine))
+
+
+def validate_route_request(origin: tuple[float, float], destination: tuple[float, float]) -> None:
+    for field_name, (latitude, longitude) in (("origin", origin), ("destination", destination)):
+        if not (
+            MONTREAL_BBOX["min_lat"] <= latitude <= MONTREAL_BBOX["max_lat"]
+            and MONTREAL_BBOX["min_lon"] <= longitude <= MONTREAL_BBOX["max_lon"]
+        ):
+            raise HTTPException(status_code=422, detail=f"{field_name} is outside the Montréal service area.")
+
+    if distance_km(origin, destination) > settings.max_route_distance_km:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Route exceeds the {settings.max_route_distance_km} km maximum straight-line distance.",
+        )
+
+
 def bixi_response(
     origin: tuple[float, float],
     destination: tuple[float, float],
@@ -222,6 +250,7 @@ def bixi_routes(
 ) -> JSONResponse:
     parsed_origin = parse_point(origin, "origin")
     parsed_destination = parse_point(destination, "destination")
+    validate_route_request(parsed_origin, parsed_destination)
     cache_key = (parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options)
 
     try:
