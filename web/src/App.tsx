@@ -17,6 +17,8 @@ import {
   Route,
   Search,
   ArrowUpDown,
+  Moon,
+  Sun,
   Undo2,
   Zap,
   X
@@ -25,7 +27,9 @@ import { fetchBixiStations, fetchRoutes, reverseGeocode, searchPlaces } from "./
 import type { BikePreference, BixiStation, Coordinate, NearbyStation, PlaceResult, RouteLeg, RouteOption, RouteResponse, RouteStep } from "./types";
 
 const MAP_CENTER: Coordinate = [-73.604, 45.522];
-const MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const LIGHT_MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
+const DARK_MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+const THEME_STORAGE_KEY = "detour-theme";
 const DESKTOP_BREAKPOINT = 800;
 const SIDEBAR_WIDTH = 390;
 
@@ -40,6 +44,15 @@ const SUGGESTED_PLACES: PlaceResult[] = [
   { id: "outremont", name: "Outremont", detail: "Laurier / Bloomfield", coordinate: [-73.6095, 45.5185], in_coverage: true },
   { id: "mcgill", name: "McGill University", detail: "Downtown campus", coordinate: [-73.5772, 45.5048], in_coverage: true }
 ];
+
+type Theme = "light" | "dark";
+
+function getInitialTheme(): Theme {
+  if (typeof window === "undefined") return "light";
+  const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (savedTheme === "dark" || savedTheme === "light") return savedTheme;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
 
 function inCoverage(place: Pick<PlaceResult, "coordinate" | "in_coverage"> | Coordinate): boolean {
   if (Array.isArray(place)) {
@@ -480,6 +493,7 @@ function App() {
   const [navigationBrowseIndex, setNavigationBrowseIndex] = useState<number | null>(null);
   const [previewedStep, setPreviewedStep] = useState<NavigationStep | null>(null);
   const [previewedStepIndex, setPreviewedStepIndex] = useState<number | null>(null);
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const selectedRoute = routes?.options[selectedIndex];
   const navigationSteps = useMemo(() => selectedRoute ? routeSteps(selectedRoute) : [], [selectedRoute]);
   const currentNavigationStep = navigationSteps[navigationStepIndex];
@@ -525,17 +539,38 @@ function App() {
     if (!mapContainer.current || mapRef.current) return;
     const map = new maplibregl.Map({
       container: mapContainer.current,
-      style: MAP_STYLE,
+      style: theme === "dark" ? DARK_MAP_STYLE : LIGHT_MAP_STYLE,
       center: MAP_CENTER,
       zoom: 12.4,
       attributionControl: false
     });
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    map.addControl(
+      new maplibregl.NavigationControl({ showCompass: false }),
+      window.innerWidth < DESKTOP_BREAKPOINT ? "top-right" : "bottom-right"
+    );
     map.on("load", () => { addRouteLayers(map); setMapReady(true); });
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; };
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#111719" : "#f7f8f5");
+
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    setMapReady(false);
+    const handleStyleLoad = () => {
+      addRouteLayers(map);
+      setMapReady(true);
+    };
+    map.once("style.load", handleStyleLoad);
+    map.setStyle(theme === "dark" ? DARK_MAP_STYLE : LIGHT_MAP_STYLE);
+    return () => { map.off("style.load", handleStyleLoad); };
+  }, [theme]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -909,6 +944,15 @@ function App() {
         <div className="mobile-brand"><Wordmark /></div>
         <button type="button" className="mode-button" aria-pressed={viewMode === "explore"} onClick={() => { setViewMode(viewMode === "plan" ? "explore" : "plan"); setSelectedMapStation(null); setSelectedExplorerStation(null); }}>
           <CircleParking size={17} />{viewMode === "plan" ? "Explore BIXI" : "Plan a trip"}
+        </button>
+        <button
+          type="button"
+          className="icon-button theme-button"
+          onClick={() => setTheme((currentTheme) => currentTheme === "light" ? "dark" : "light")}
+          aria-label={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
+          title={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
+        >
+          {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
         </button>
         <button type="button" className="icon-button coverage-button" aria-label="Center map" onClick={() => mapRef.current?.flyTo({ center: origin ?? MAP_CENTER, zoom: origin ? 14 : 12.4 })}>
           <Crosshair size={19} />
