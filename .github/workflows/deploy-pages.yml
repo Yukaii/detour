@@ -27,7 +27,7 @@ jobs:
       - run: npm ci
         working-directory: web
       - name: Build PWA
-        run: npm run build -- --base "/${GITHUB_REPOSITORY#*/}/"
+        run: npm run build -- --base /
         working-directory: web
         env:
           VITE_DETOUR_API_URL: https://detour-montreal-api.fly.dev
