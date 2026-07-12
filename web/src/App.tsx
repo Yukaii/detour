@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FeatureCollection } from "geojson";
 import maplibregl from "maplibre-gl";
 import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
 import {
   Bike,
-  ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CircleDot,
   CircleParking,
@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Route,
   Search,
+  ArrowUpDown,
   Undo2,
   Zap,
   X
@@ -54,7 +55,8 @@ function pointFeature(coordinate: Coordinate, kind: string): FeatureCollection {
 }
 
 function lineFeature(coordinates: Coordinate[]): FeatureCollection {
-  return { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates } }] };
+  const validCoordinates = coordinates.length === 1 ? [coordinates[0], coordinates[0]] : coordinates;
+  return { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: validCoordinates } }] };
 }
 
 function stationFeatures(routes: RouteResponse | null, selectedIndex: number, preference: BikePreference): FeatureCollection {
@@ -75,7 +77,7 @@ function stationFeatures(routes: RouteResponse | null, selectedIndex: number, pr
   return {
     type: "FeatureCollection",
     features: candidates.flatMap((station) => {
-      const key = `${station.kind}-${station.station_id}`;
+      const key = station.station_id;
       if (seen.has(key)) return [];
       seen.add(key);
       const isSelected = station.kind === "pickup" ? selected?.pickup.station_id === station.station_id : selected?.dropoff.station_id === station.station_id;
@@ -86,7 +88,7 @@ function stationFeatures(routes: RouteResponse | null, selectedIndex: number, pr
           stationId: station.station_id,
           selected: isSelected ? 1 : 0,
           count: station.kind === "dropoff" ? station.available_docks : preference === "ebike" ? station.available_ebikes : preference === "regular" ? station.available_regular_bikes : station.available_bikes,
-          bikeCode: station.kind === "dropoff" ? "P" : preference === "ebike" ? "E" : preference === "regular" ? "R" : "",
+          availabilityLabel: station.kind === "dropoff" ? "DOCKS" : preference === "ebike" ? "E-BIKES" : preference === "regular" ? "REGULAR" : "BIKES",
           name: station.name
         },
         geometry: { type: "Point" as const, coordinates: station.coordinates }
@@ -113,6 +115,49 @@ function allCoordinates(option: RouteOption): Coordinate[] {
   ];
 }
 
+type NavigationStep = { step: RouteStep; leg: RouteLeg; mode: "walk" | "bike"; segment: Coordinate[] };
+
+function distanceSquared(a: Coordinate, b: Coordinate): number {
+  const latitudeScale = Math.cos(((a[1] + b[1]) / 2) * Math.PI / 180);
+  return ((a[0] - b[0]) * latitudeScale) ** 2 + (a[1] - b[1]) ** 2;
+}
+
+function nearestCoordinateIndex(coordinates: Coordinate[], point: Coordinate): number {
+  let bestIndex = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  coordinates.forEach((coordinate, index) => {
+    const distance = distanceSquared(coordinate, point);
+    if (distance < bestDistance) { bestDistance = distance; bestIndex = index; }
+  });
+  return bestIndex;
+}
+
+function routeSteps(option: RouteOption): NavigationStep[] {
+  const legs: Array<{ leg: RouteLeg; mode: "walk" | "bike" }> = [
+    { leg: option.legs.walk_to_pickup, mode: "walk" },
+    { leg: option.legs.bike, mode: "bike" },
+    { leg: option.legs.walk_to_destination, mode: "walk" }
+  ];
+  return legs.flatMap(({ leg, mode }) => leg.steps.map((step, index) => {
+    const start = nearestCoordinateIndex(leg.coordinates, step.coordinate);
+    const nextStep = leg.steps[index + 1];
+    const end = nextStep ? nearestCoordinateIndex(leg.coordinates, nextStep.coordinate) : leg.coordinates.length - 1;
+    return { step, leg, mode, segment: leg.coordinates.slice(Math.min(start, end), Math.max(start, end) + 1) };
+  }));
+}
+
+function routeBearing(coordinates: Coordinate[], index: number): number {
+  const from = coordinates[index];
+  const to = coordinates[Math.min(index + 4, coordinates.length - 1)];
+  if (!from || !to || from === to) return 0;
+  const lonDelta = (to[0] - from[0]) * Math.PI / 180;
+  const lat1 = from[1] * Math.PI / 180;
+  const lat2 = to[1] * Math.PI / 180;
+  const y = Math.sin(lonDelta) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(lonDelta);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
 function mapFitPadding(): maplibregl.PaddingOptions {
   if (typeof window !== "undefined" && window.innerWidth >= DESKTOP_BREAKPOINT) {
     return { top: 48, right: 48, bottom: 48, left: SIDEBAR_WIDTH + 48 };
@@ -125,8 +170,11 @@ function addRouteLayers(map: MapLibreMap): void {
   map.addSource("bike-route", { type: "geojson", data: lineFeature([]) });
   map.addSource("walk-dropoff", { type: "geojson", data: lineFeature([]) });
   map.addSource("route-points", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-  map.addSource("candidate-stations", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addSource("candidate-stations", { type: "geojson", data: { type: "FeatureCollection", features: [] }, cluster: true, clusterRadius: 42, clusterMaxZoom: 15 });
   map.addSource("user-location", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addSource("navigation-completed", { type: "geojson", data: lineFeature([]) });
+  map.addSource("navigation-remaining", { type: "geojson", data: lineFeature([]) });
+  map.addSource("step-preview", { type: "geojson", data: lineFeature([]) });
   map.addLayer({
     id: "walk-pickup",
     type: "line",
@@ -153,6 +201,34 @@ function addRouteLayers(map: MapLibreMap): void {
     type: "line",
     source: "walk-dropoff",
     paint: { "line-color": "#20262d", "line-width": 3, "line-opacity": 0.72, "line-dasharray": [1, 1.6] },
+    layout: { "line-cap": "round", "line-join": "round" }
+  });
+  map.addLayer({
+    id: "navigation-completed",
+    type: "line",
+    source: "navigation-completed",
+    paint: { "line-color": "#718078", "line-width": 7, "line-opacity": 0.88 },
+    layout: { "line-cap": "round", "line-join": "round" }
+  });
+  map.addLayer({
+    id: "navigation-remaining",
+    type: "line",
+    source: "navigation-remaining",
+    paint: { "line-color": "#165df5", "line-width": 8 },
+    layout: { "line-cap": "round", "line-join": "round" }
+  });
+  map.addLayer({
+    id: "step-preview-casing",
+    type: "line",
+    source: "step-preview",
+    paint: { "line-color": "#ffffff", "line-width": 12, "line-opacity": 0.95 },
+    layout: { "line-cap": "round", "line-join": "round" }
+  });
+  map.addLayer({
+    id: "step-preview",
+    type: "line",
+    source: "step-preview",
+    paint: { "line-color": "#ef6c00", "line-width": 7 },
     layout: { "line-cap": "round", "line-join": "round" }
   });
   map.addLayer({
@@ -184,8 +260,9 @@ function addRouteLayers(map: MapLibreMap): void {
     id: "candidate-station-halo",
     type: "circle",
     source: "candidate-stations",
+    filter: ["!", ["has", "point_count"]],
     paint: {
-      "circle-radius": ["case", ["==", ["get", "selected"], 1], 20, 17],
+      "circle-radius": ["case", ["==", ["get", "selected"], 1], 25, 22],
       "circle-color": "#ffffff",
       "circle-stroke-color": ["match", ["get", "kind"], "pickup", "#165df5", "#08a66c"],
       "circle-stroke-width": ["case", ["==", ["get", "selected"], 1], 4, 2],
@@ -196,14 +273,31 @@ function addRouteLayers(map: MapLibreMap): void {
     id: "candidate-station-count",
     type: "symbol",
     source: "candidate-stations",
+    filter: ["!", ["has", "point_count"]],
     layout: {
-      "text-field": ["concat", ["get", "bikeCode"], ["to-string", ["get", "count"]]],
-      "text-size": 11,
+      "text-field": ["concat", ["to-string", ["get", "count"]], "\n", ["get", "availabilityLabel"]],
+      "text-size": 9,
+      "text-line-height": 0.95,
       "text-font": ["Open Sans Bold"],
       "text-allow-overlap": true,
       "text-ignore-placement": true
     },
     paint: { "text-color": ["match", ["get", "kind"], "pickup", "#165df5", "#087c55"] }
+  });
+  map.addLayer({
+    id: "candidate-station-clusters",
+    type: "circle",
+    source: "candidate-stations",
+    filter: ["has", "point_count"],
+    paint: { "circle-radius": 23, "circle-color": "#ffffff", "circle-stroke-color": "#536169", "circle-stroke-width": 2.5, "circle-opacity": 0.96 }
+  });
+  map.addLayer({
+    id: "candidate-station-cluster-count",
+    type: "symbol",
+    source: "candidate-stations",
+    filter: ["has", "point_count"],
+    layout: { "text-field": ["concat", ["to-string", ["get", "point_count"]], "\nSTOPS"], "text-size": 9, "text-line-height": 0.95, "text-font": ["Open Sans Bold"], "text-allow-overlap": true },
+    paint: { "text-color": "#39454c" }
   });
   map.addLayer({
     id: "route-points-rings",
@@ -218,12 +312,30 @@ function addRouteLayers(map: MapLibreMap): void {
   });
 }
 
-function clearMapRoute(map: MapLibreMap): void {
+function updateMapEndpoints(map: MapLibreMap, origin: Coordinate | null, destination: Coordinate | null, fit = false): void {
   (map.getSource("walk-pickup") as GeoJSONSource)?.setData(lineFeature([]));
   (map.getSource("bike-route") as GeoJSONSource)?.setData(lineFeature([]));
   (map.getSource("walk-dropoff") as GeoJSONSource)?.setData(lineFeature([]));
-  (map.getSource("route-points") as GeoJSONSource)?.setData({ type: "FeatureCollection", features: [] });
   (map.getSource("candidate-stations") as GeoJSONSource)?.setData({ type: "FeatureCollection", features: [] });
+  (map.getSource("route-points") as GeoJSONSource)?.setData({
+    type: "FeatureCollection",
+    features: [
+      ...(origin ? [pointFeature(origin, "origin").features[0]] : []),
+      ...(destination ? [pointFeature(destination, "destination").features[0]] : [])
+    ]
+  });
+  if (fit && origin && destination) {
+    const bounds = new maplibregl.LngLatBounds();
+    bounds.extend(origin);
+    bounds.extend(destination);
+    map.fitBounds(bounds, { padding: mapFitPadding(), maxZoom: 14.5, duration: 500 });
+  }
+}
+
+function clearNavigationLayers(map: MapLibreMap): void {
+  (map.getSource("navigation-completed") as GeoJSONSource)?.setData(lineFeature([]));
+  (map.getSource("navigation-remaining") as GeoJSONSource)?.setData(lineFeature([]));
+  (map.getSource("step-preview") as GeoJSONSource)?.setData(lineFeature([]));
 }
 
 function updateUserLocation(map: MapLibreMap, origin: Coordinate | null): void {
@@ -257,7 +369,7 @@ function StepIcon({ step }: { step: RouteStep }) {
   return <ChevronRight size={18} />;
 }
 
-function TurnList({ option, onClose }: { option: RouteOption; onClose: () => void }) {
+function TurnList({ option, onClose, onPreview, onStart }: { option: RouteOption; onClose: () => void; onPreview: (step: NavigationStep) => void; onStart: () => void }) {
   const groups: Array<{ label: string; icon: typeof Bike; leg: RouteLeg }> = [
     { label: "Walk to BIXI", icon: Route, leg: option.legs.walk_to_pickup },
     { label: "Ride", icon: Bike, leg: option.legs.bike },
@@ -267,18 +379,25 @@ function TurnList({ option, onClose }: { option: RouteOption; onClose: () => voi
     <div className="turn-sheet" role="dialog" aria-label="Route directions">
       <header className="turn-header">
         <div><span>Directions</span><strong>{option.estimated_total_minutes} min total</strong></div>
-        <button type="button" className="icon-button" onClick={onClose} aria-label="Close directions"><X size={20} /></button>
+        <div className="turn-header-actions">
+          <button type="button" className="start-navigation-button" onClick={onStart}><Navigation size={16} fill="currentColor" />Start</button>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="Close directions"><X size={20} /></button>
+        </div>
       </header>
       <div className="turn-scroll">
         {groups.map(({ label, icon: Icon, leg }) => (
           <section className="turn-group" key={label}>
             <h3><Icon size={17} />{label}<span>{formatDistance(leg.distance_m)}</span></h3>
-            {leg.steps.map((step, index) => (
-              <div className="turn-row" key={`${label}-${step.instruction}-${step.distance_m}-${index}`}>
+            {leg.steps.map((step, index) => {
+              const start = nearestCoordinateIndex(leg.coordinates, step.coordinate);
+              const nextStep = leg.steps[index + 1];
+              const end = nextStep ? nearestCoordinateIndex(leg.coordinates, nextStep.coordinate) : leg.coordinates.length - 1;
+              const navigationStep: NavigationStep = { step, leg, mode: label === "Ride" ? "bike" : "walk", segment: leg.coordinates.slice(Math.min(start, end), Math.max(start, end) + 1) };
+              return <button type="button" className="turn-row" key={`${label}-${step.instruction}-${step.distance_m}-${index}`} onClick={() => onPreview(navigationStep)}>
                 <span className="turn-icon"><StepIcon step={step} /></span>
-                <span><strong>{step.instruction}</strong>{step.distance_m > 0 && <small>{formatDistance(step.distance_m)}</small>}</span>
-              </div>
-            ))}
+                <span><strong>{step.instruction}</strong>{step.distance_m > 0 && <small>{formatDistance(step.distance_m)}</small>}<ChevronRight size={15} /></span>
+              </button>;
+            })}
           </section>
         ))}
       </div>
@@ -301,17 +420,25 @@ function App() {
   const mapRef = useRef<MapLibreMap | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const searchRef = useRef<AbortController | null>(null);
+  const originSearchRef = useRef<AbortController | null>(null);
+  const navigationWatchRef = useRef<number | null>(null);
+  const previewTouchStartRef = useRef<number | null>(null);
+  const navigationTouchStartRef = useRef<number | null>(null);
   const [origin, setOrigin] = useState<Coordinate | null>(null);
   const [destination, setDestination] = useState<Coordinate | null>(null);
   const [destinationName, setDestinationName] = useState("");
   const [originLabel, setOriginLabel] = useState("Set start location");
-  const [usingGps, setUsingGps] = useState(false);
+  const [originFocused, setOriginFocused] = useState(false);
+  const [originSearchQuery, setOriginSearchQuery] = useState("");
+  const [originSearchResults, setOriginSearchResults] = useState<PlaceResult[]>([]);
+  const [originSearching, setOriginSearching] = useState(false);
+  const [gpsField, setGpsField] = useState<"origin" | "destination" | null>(null);
   const [preference, setPreference] = useState<BikePreference>("any");
   const [routes, setRoutes] = useState<RouteResponse | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [mapPickMode, setMapPickMode] = useState(false);
+  const [mapPickMode, setMapPickMode] = useState<"origin" | "destination" | null>(null);
   const [showTurns, setShowTurns] = useState(false);
   const [mapReady, setMapReady] = useState(false);
   const [destinationFocused, setDestinationFocused] = useState(false);
@@ -319,7 +446,17 @@ function App() {
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [selectedMapStation, setSelectedMapStation] = useState<NearbyStation | null>(null);
+  const [navigationActive, setNavigationActive] = useState(false);
+  const [navigationLocation, setNavigationLocation] = useState<Coordinate | null>(null);
+  const [navigationStepIndex, setNavigationStepIndex] = useState(0);
+  const [navigationAccuracy, setNavigationAccuracy] = useState<number | null>(null);
+  const [navigationBrowseIndex, setNavigationBrowseIndex] = useState<number | null>(null);
+  const [previewedStep, setPreviewedStep] = useState<NavigationStep | null>(null);
+  const [previewedStepIndex, setPreviewedStepIndex] = useState<number | null>(null);
   const selectedRoute = routes?.options[selectedIndex];
+  const navigationSteps = useMemo(() => selectedRoute ? routeSteps(selectedRoute) : [], [selectedRoute]);
+  const currentNavigationStep = navigationSteps[navigationStepIndex];
+  const displayedNavigationStep = navigationBrowseIndex === null ? currentNavigationStep : navigationSteps[navigationBrowseIndex];
 
   const requestRoutes = useCallback(async (nextOrigin: Coordinate | null = origin, nextDestination: Coordinate | null = destination, nextPreference: BikePreference = preference, stationChoice?: { kind: "pickup" | "dropoff"; stationId: string }) => {
     if (!nextOrigin || !nextDestination) return;
@@ -334,11 +471,15 @@ function App() {
     setLoading(true);
     setError(null);
     setShowTurns(false);
+    setRoutes(null);
+    setSelectedMapStation(null);
     try {
       const response = await fetchRoutes(nextOrigin, nextDestination, nextPreference, controller.signal, stationChoice);
       setRoutes(response);
       setSelectedIndex(0);
       setSelectedMapStation(null);
+      setPreviewedStep(null);
+      setPreviewedStepIndex(null);
     } catch (requestError) {
       if ((requestError as Error).name !== "AbortError") {
         const message = (requestError as Error).message;
@@ -380,12 +521,26 @@ function App() {
     const showPointer = () => { map.getCanvas().style.cursor = "pointer"; };
     const hidePointer = () => { map.getCanvas().style.cursor = ""; };
     map.on("click", "candidate-station-halo", selectCandidate);
+    const expandCluster = (event: maplibregl.MapLayerMouseEvent) => {
+      const feature = event.features?.[0];
+      const clusterId = Number(feature?.properties?.cluster_id);
+      const coordinates = feature?.geometry.type === "Point" ? feature.geometry.coordinates as Coordinate : null;
+      const source = map.getSource("candidate-stations") as GeoJSONSource;
+      if (!Number.isFinite(clusterId) || !coordinates) return;
+      void source.getClusterExpansionZoom(clusterId).then((zoom) => map.easeTo({ center: coordinates, zoom, duration: 500 }));
+    };
+    map.on("click", "candidate-station-clusters", expandCluster);
     map.on("mouseenter", "candidate-station-halo", showPointer);
     map.on("mouseleave", "candidate-station-halo", hidePointer);
+    map.on("mouseenter", "candidate-station-clusters", showPointer);
+    map.on("mouseleave", "candidate-station-clusters", hidePointer);
     return () => {
       map.off("click", "candidate-station-halo", selectCandidate);
+      map.off("click", "candidate-station-clusters", expandCluster);
       map.off("mouseenter", "candidate-station-halo", showPointer);
       map.off("mouseleave", "candidate-station-halo", hidePointer);
+      map.off("mouseenter", "candidate-station-clusters", showPointer);
+      map.off("mouseleave", "candidate-station-clusters", hidePointer);
     };
   }, [mapReady, routes]);
 
@@ -394,19 +549,33 @@ function App() {
     if (!map) return;
     const handleClick = (event: maplibregl.MapMouseEvent) => {
       if (!mapPickMode) return;
-      const nextDestination: Coordinate = [event.lngLat.lng, event.lngLat.lat];
-      setDestination(nextDestination);
-      setDestinationName("Locating…");
-      setSearchQuery("");
-      setMapPickMode(false);
-      void reverseGeocode(nextDestination).then((place) => {
-        setDestinationName(place.name);
+      const coordinate: Coordinate = [event.lngLat.lng, event.lngLat.lat];
+      const pickedField = mapPickMode;
+      setMapPickMode(null);
+      if (pickedField === "origin") {
+        setOrigin(coordinate);
+        setOriginLabel("Locating…");
+        setOriginSearchQuery("");
+      } else {
+        setDestination(coordinate);
+        setDestinationName("Locating…");
+        setSearchQuery("");
+      }
+      void reverseGeocode(coordinate).then((place) => {
+        if (pickedField === "origin") {
+          setOriginLabel(place.name);
+          setOriginSearchQuery(place.name);
+        } else {
+          setDestinationName(place.name);
+          setSearchQuery(place.name);
+        }
         if (!inCoverage(place)) {
           setRoutes(null);
           setError("That point is outside central Montréal coverage. Try Mile End, Plateau, or Jean-Talon.");
         }
       });
-      if (origin) void requestRoutes(origin, nextDestination);
+      if (pickedField === "origin" && destination) void requestRoutes(coordinate, destination);
+      if (pickedField === "destination" && origin) void requestRoutes(origin, coordinate);
     };
     map.on("click", handleClick);
     return () => { map.off("click", handleClick); };
@@ -416,11 +585,49 @@ function App() {
     if (!mapReady || !mapRef.current) return;
     updateUserLocation(mapRef.current, origin);
     if (!selectedRoute || !origin || !destination) {
-      clearMapRoute(mapRef.current);
+      updateMapEndpoints(mapRef.current, origin, destination, loading);
       return;
     }
     updateMapRoute(mapRef.current, selectedRoute, origin, destination, stationFeatures(routes, selectedIndex, preference));
-  }, [destination, mapReady, origin, preference, routes, selectedIndex, selectedRoute]);
+  }, [destination, loading, mapReady, origin, preference, routes, selectedIndex, selectedRoute]);
+
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    updateUserLocation(mapRef.current, navigationLocation ?? origin);
+  }, [mapReady, navigationLocation, origin]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!navigationActive || !navigationLocation || !selectedRoute || !mapReady || !map) return;
+    const coordinates = allCoordinates(selectedRoute);
+    const progressIndex = nearestCoordinateIndex(coordinates, navigationLocation);
+    (map.getSource("navigation-completed") as GeoJSONSource).setData(lineFeature(coordinates.slice(0, Math.max(2, progressIndex + 1))));
+    (map.getSource("navigation-remaining") as GeoJSONSource).setData(lineFeature(coordinates.slice(Math.max(0, progressIndex), coordinates.length)));
+    if (navigationBrowseIndex === null) (map.getSource("step-preview") as GeoJSONSource).setData(lineFeature([]));
+
+    let nextStepIndex = 0;
+    navigationSteps.forEach((entry, index) => {
+      const entryRouteIndex = nearestCoordinateIndex(coordinates, entry.step.coordinate);
+      if (entryRouteIndex <= progressIndex + 1) nextStepIndex = index;
+    });
+    setNavigationStepIndex(Math.min(nextStepIndex, navigationSteps.length - 1));
+    if (navigationBrowseIndex === null) map.easeTo({ center: navigationLocation, zoom: 17, pitch: 48, bearing: routeBearing(coordinates, progressIndex), duration: 700, padding: { top: 150, bottom: 190, left: 40, right: 40 } });
+  }, [mapReady, navigationActive, navigationBrowseIndex, navigationLocation, navigationSteps, selectedRoute]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!navigationActive || navigationBrowseIndex === null || !map) return;
+    const entry = navigationSteps[navigationBrowseIndex];
+    if (!entry || entry.segment.length < 2) return;
+    (map.getSource("step-preview") as GeoJSONSource)?.setData(lineFeature(entry.segment));
+    const bounds = new maplibregl.LngLatBounds();
+    entry.segment.forEach((coordinate) => bounds.extend(coordinate));
+    map.fitBounds(bounds, { padding: { top: 170, right: 48, bottom: 120, left: 48 }, maxZoom: 18, duration: 550, pitch: 20 });
+  }, [navigationActive, navigationBrowseIndex, navigationSteps]);
+
+  useEffect(() => () => {
+    if (navigationWatchRef.current !== null) navigator.geolocation.clearWatch(navigationWatchRef.current);
+  }, []);
 
   useEffect(() => {
     if (!destinationFocused) return;
@@ -456,22 +663,53 @@ function App() {
     };
   }, [destinationFocused, searchQuery]);
 
-  const useCurrentLocation = () => {
+  useEffect(() => {
+    if (!originFocused) return;
+    const term = originSearchQuery.trim();
+    if (term.length < 2) {
+      setOriginSearchResults([]);
+      setOriginSearching(false);
+      return;
+    }
+    originSearchRef.current?.abort();
+    const controller = new AbortController();
+    originSearchRef.current = controller;
+    setOriginSearching(true);
+    const timer = window.setTimeout(() => {
+      void searchPlaces(term, controller.signal)
+        .then((results) => { if (originSearchRef.current === controller) setOriginSearchResults(results); })
+        .catch((searchError) => { if ((searchError as Error).name !== "AbortError" && originSearchRef.current === controller) setOriginSearchResults([]); })
+        .finally(() => { if (originSearchRef.current === controller) setOriginSearching(false); });
+    }, 280);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [originFocused, originSearchQuery]);
+
+  const useGpsLocation = (field: "origin" | "destination") => {
     if (!navigator.geolocation) { setError("Location is not available on this device."); return; }
-    setUsingGps(true);
-    setOriginLabel("Locating…");
+    setGpsField(field);
+    if (field === "origin") setOriginLabel("Locating…");
+    else setDestinationName("Locating…");
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const nextOrigin: Coordinate = [coords.longitude, coords.latitude];
-        setOrigin(nextOrigin);
-        setOriginLabel("Current location");
-        setUsingGps(false);
-        mapRef.current?.flyTo({ center: nextOrigin, zoom: 14 });
-        void requestRoutes(nextOrigin, destination);
+        const coordinate: Coordinate = [coords.longitude, coords.latitude];
+        setGpsField(null);
+        mapRef.current?.flyTo({ center: coordinate, zoom: 14 });
+        if (field === "origin") {
+          setOrigin(coordinate);
+          setOriginLabel("Current location");
+          setOriginSearchQuery("Current location");
+          if (destination) void requestRoutes(coordinate, destination);
+        } else {
+          setDestination(coordinate);
+          setDestinationName("Current location");
+          setSearchQuery("Current location");
+          if (origin) void requestRoutes(origin, coordinate);
+        }
       },
       () => {
-        setUsingGps(false);
-        setOriginLabel("Set start location");
+        setGpsField(null);
+        if (field === "origin") setOriginLabel(origin ? originLabel : "Set start location");
+        else setDestinationName(destination ? destinationName : "");
         setError("We could not access your location. Check browser permissions.");
       },
       { enableHighAccuracy: true, timeout: 10000 }
@@ -494,11 +732,125 @@ function App() {
     else setError("Set your start location to find BIXI routes.");
   };
 
+  const selectOriginPlace = (place: PlaceResult) => {
+    setOrigin(place.coordinate);
+    setOriginLabel(place.name);
+    setOriginSearchQuery(place.name);
+    setOriginFocused(false);
+    setOriginSearchResults([]);
+    mapRef.current?.flyTo({ center: place.coordinate, zoom: 14 });
+    if (!inCoverage(place)) {
+      setRoutes(null);
+      setError("That start is outside central Montréal coverage. Try Mile End, Plateau, or Jean-Talon.");
+      return;
+    }
+    if (destination) void requestRoutes(place.coordinate, destination);
+  };
+
+  const swapLocations = () => {
+    const nextOrigin = destination;
+    const nextDestination = origin;
+    const nextOriginLabel = destination ? (destinationName || "Selected destination") : "Set start location";
+    const nextDestinationName = origin ? originLabel : "";
+    setOrigin(nextOrigin);
+    setDestination(nextDestination);
+    setOriginLabel(nextOriginLabel);
+    setDestinationName(nextDestinationName);
+    setOriginSearchQuery(nextOrigin ? nextOriginLabel : "");
+    setSearchQuery(nextDestinationName);
+    setOriginFocused(false);
+    setDestinationFocused(false);
+    setSelectedMapStation(null);
+    setPreviewedStep(null);
+    setPreviewedStepIndex(null);
+    if (nextOrigin && nextDestination) void requestRoutes(nextOrigin, nextDestination);
+    else setRoutes(null);
+  };
+
+  const clearLocation = (field: "origin" | "destination") => {
+    requestRef.current?.abort();
+    setLoading(false);
+    setRoutes(null);
+    setSelectedMapStation(null);
+    setPreviewedStep(null);
+    setPreviewedStepIndex(null);
+    if (field === "origin") {
+      setOrigin(null);
+      setOriginLabel("Set start location");
+      setOriginSearchQuery("");
+    } else {
+      setDestination(null);
+      setDestinationName("");
+      setSearchQuery("");
+    }
+  };
+
+  const previewStep = (entry: NavigationStep) => {
+    const map = mapRef.current;
+    if (!map || entry.segment.length < 2) return;
+    (map.getSource("step-preview") as GeoJSONSource)?.setData(lineFeature(entry.segment));
+    setPreviewedStep(entry);
+    const index = navigationSteps.findIndex((candidate) => candidate.step === entry.step || (
+      candidate.step.instruction === entry.step.instruction && candidate.step.coordinate[0] === entry.step.coordinate[0] && candidate.step.coordinate[1] === entry.step.coordinate[1]
+    ));
+    setPreviewedStepIndex(index >= 0 ? index : null);
+    if (window.innerWidth < DESKTOP_BREAKPOINT) setShowTurns(false);
+    const bounds = new maplibregl.LngLatBounds();
+    entry.segment.forEach((coordinate) => bounds.extend(coordinate));
+    map.fitBounds(bounds, { padding: window.innerWidth >= DESKTOP_BREAKPOINT ? { top: 100, right: 400, bottom: 100, left: SIDEBAR_WIDTH + 55 } : { top: 100, right: 55, bottom: 120, left: 55 }, maxZoom: 18, duration: 650 });
+  };
+
+  const jumpPreview = (direction: -1 | 1) => {
+    if (previewedStepIndex === null || navigationSteps.length === 0) return;
+    const nextIndex = Math.min(navigationSteps.length - 1, Math.max(0, previewedStepIndex + direction));
+    if (nextIndex !== previewedStepIndex) previewStep(navigationSteps[nextIndex]);
+  };
+
+  const startNavigation = () => {
+    if (!selectedRoute || !navigator.geolocation) { setError("Live navigation requires location access on this device."); return; }
+    if (navigationWatchRef.current !== null) navigator.geolocation.clearWatch(navigationWatchRef.current);
+    setShowTurns(false);
+    setPreviewedStep(null);
+    setPreviewedStepIndex(null);
+    setNavigationActive(true);
+    setNavigationStepIndex(0);
+    setNavigationBrowseIndex(null);
+    setPreviewedStep(null);
+    setPreviewedStepIndex(null);
+    navigationWatchRef.current = navigator.geolocation.watchPosition(
+      ({ coords }) => {
+        setNavigationLocation([coords.longitude, coords.latitude]);
+        setNavigationAccuracy(coords.accuracy);
+      },
+      () => {
+        setNavigationActive(false);
+        setError("Live navigation could not access your location. Check browser permissions and try again.");
+      },
+      { enableHighAccuracy: true, maximumAge: 2000, timeout: 12000 }
+    );
+  };
+
+  const stopNavigation = () => {
+    if (navigationWatchRef.current !== null) navigator.geolocation.clearWatch(navigationWatchRef.current);
+    navigationWatchRef.current = null;
+    setNavigationActive(false);
+    setNavigationLocation(null);
+    setNavigationAccuracy(null);
+    setNavigationStepIndex(0);
+    setNavigationBrowseIndex(null);
+    if (mapRef.current) {
+      clearNavigationLayers(mapRef.current);
+      mapRef.current.easeTo({ pitch: 0, bearing: 0, duration: 450 });
+      if (selectedRoute && origin && destination) updateMapRoute(mapRef.current, selectedRoute, origin, destination, stationFeatures(routes, selectedIndex, preference));
+    }
+  };
+
   const showResults = destinationFocused;
   const displayResults = searchQuery.trim().length < 2 ? SUGGESTED_PLACES : searchResults;
+  const originDisplayResults = originSearchQuery.trim().length < 2 ? SUGGESTED_PLACES : originSearchResults;
 
   return (
-    <main className={`app-shell ${mapPickMode ? "is-picking" : ""}`}>
+    <main className={`app-shell ${mapPickMode ? "is-picking" : ""} ${navigationActive ? "navigating" : ""}`}>
       <div ref={mapContainer} className="map" aria-label="Detour route map" />
 
       <header className="top-bar">
@@ -508,19 +860,55 @@ function App() {
         </button>
       </header>
 
+      {loading && (
+        <div className="route-loading-banner" role="status" aria-live="polite">
+          <Loader2 className="spin" size={17} />
+          <span><strong>Finding your BIXI route</strong><small>Checking live bikes, docks, and comfortable streets…</small></span>
+        </div>
+      )}
+
       <section className="planner" aria-label="Route planner">
         <div className="planner-handle" />
         <div className="planner-brand"><Wordmark /></div>
         <div className="location-stack">
-          <span className="location-rail"><CircleDot size={15} /><i /><MapPin size={16} /></span>
+          <span className="location-rail"><CircleDot size={15} /><button type="button" onClick={swapLocations} aria-label="Swap start and destination"><ArrowUpDown size={14} /></button><MapPin size={16} /></span>
           <div className="location-fields">
-            <button type="button" className="location-field origin-field" onClick={useCurrentLocation}>
+            <div className={`location-field origin-field ${origin ? "has-value" : ""}`}>
+              <Search size={17} />
               <span>
                 <small>START</small>
-                <strong className={!origin ? "is-placeholder" : undefined}>{originLabel}</strong>
+                <input
+                  value={originFocused ? originSearchQuery : originLabel}
+                  onChange={(event) => { setOriginSearchQuery(event.target.value); if (!originFocused) setOriginFocused(true); }}
+                  onFocus={() => { setDestinationFocused(false); setOriginFocused(true); setOriginSearchQuery(origin ? originLabel : ""); }}
+                  onBlur={() => { window.setTimeout(() => setOriginFocused(false), 120); }}
+                  aria-label="Start location"
+                  placeholder="Choose a start"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
               </span>
-              {usingGps ? <Loader2 className="spin" size={18} /> : <LocateFixed size={18} />}
-            </button>
+              {origin && <button type="button" className="clear-location-button" onMouseDown={(event) => event.preventDefault()} onClick={() => clearLocation("origin")} aria-label="Clear start location"><X size={15} /></button>}
+              {originFocused && (
+                <div className="place-results origin-results">
+                  <button type="button" className="current-location-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { setOriginFocused(false); useGpsLocation("origin"); }}>
+                    {gpsField === "origin" ? <Loader2 className="spin" size={16} /> : <LocateFixed size={16} />}<span><strong>Current location</strong><small>Use this device’s GPS</small></span>
+                  </button>
+                  <button type="button" className="place-map-pick" onMouseDown={(event) => event.preventDefault()} onClick={() => { setOriginFocused(false); setMapPickMode("origin"); }}>
+                    <MapPin size={16} /><span><strong>Pick on map</strong><small>Central Montréal pilot area</small></span>
+                  </button>
+                  {originSearchQuery.trim().length < 2 && <div className="place-results-label">Popular nearby</div>}
+                  {originSearching && <div className="place-results-status"><Loader2 className="spin" size={15} />Searching…</div>}
+                  {!originSearching && originSearchQuery.trim().length >= 2 && originDisplayResults.length === 0 && <div className="place-results-status">No places found in central Montréal</div>}
+                  {originDisplayResults.map((place) => {
+                    const covered = inCoverage(place);
+                    return <button type="button" key={place.id} className={covered ? undefined : "out-of-coverage"} onMouseDown={(event) => event.preventDefault()} onClick={() => selectOriginPlace(place)}>
+                      <MapPin size={16} /><span><strong>{place.name}</strong><small>{covered ? place.detail : "Outside current coverage"}</small></span>
+                    </button>;
+                  })}
+                </div>
+              )}
+            </div>
             <div className="destination-field">
               <Search size={18} />
               <input
@@ -530,6 +918,7 @@ function App() {
                   if (!destinationFocused) setDestinationFocused(true);
                 }}
                 onFocus={() => {
+                  setOriginFocused(false);
                   setDestinationFocused(true);
                   setSearchQuery(destinationName === "Locating…" ? "" : destinationName);
                 }}
@@ -541,9 +930,15 @@ function App() {
                 autoComplete="off"
                 spellCheck={false}
               />
-              <button type="button" onClick={() => setMapPickMode(true)} aria-label="Choose destination on map"><MapPin size={18} /></button>
+              {destination && <button type="button" className="clear-location-button" onMouseDown={(event) => event.preventDefault()} onClick={() => clearLocation("destination")} aria-label="Clear destination"><X size={15} /></button>}
               {showResults && (
                 <div className="place-results">
+                  <button type="button" className="current-location-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { setDestinationFocused(false); useGpsLocation("destination"); }}>
+                    {gpsField === "destination" ? <Loader2 className="spin" size={16} /> : <LocateFixed size={16} />}<span><strong>Current location</strong><small>Use this device’s GPS</small></span>
+                  </button>
+                  <button type="button" className="place-map-pick" onMouseDown={(event) => event.preventDefault()} onClick={() => { setDestinationFocused(false); setMapPickMode("destination"); }}>
+                    <MapPin size={16} /><span><strong>Pick on map</strong><small>Central Montréal pilot area</small></span>
+                  </button>
                   {searchQuery.trim().length < 2 && (
                     <div className="place-results-label">Popular nearby</div>
                   )}
@@ -561,9 +956,6 @@ function App() {
                       </button>
                     );
                   })}
-                  <button type="button" className="place-map-pick" onMouseDown={(event) => event.preventDefault()} onClick={() => { setDestinationFocused(false); setMapPickMode(true); }}>
-                    <MapPin size={16} /><span><strong>Pick on map</strong><small>Central Montréal pilot area</small></span>
-                  </button>
                 </div>
               )}
             </div>
@@ -634,19 +1026,66 @@ function App() {
         </div>
 
         {selectedRoute && (
-          <button type="button" className="mobile-directions-button" onClick={() => setShowTurns(true)}>
-            <Navigation size={17} /><span>View directions</span><strong>{selectedRoute.estimated_total_minutes} min</strong><ChevronRight size={17} />
-          </button>
+          <div className="mobile-route-actions">
+            <button type="button" className="route-preview-button" onClick={() => setShowTurns(true)}><Route size={17} /><span>Preview</span></button>
+            <button type="button" className="mobile-directions-button" onClick={startNavigation}>
+              <Navigation size={17} fill="currentColor" /><span>Start</span><strong>{selectedRoute.estimated_total_minutes} min</strong><ChevronRight size={17} />
+            </button>
+          </div>
         )}
 
         {selectedRoute && (
           <div className="station-strip">
             <div><span className="station-dot pickup-dot" /><span><small>Pick up · {timeAgo(selectedRoute.pickup.availability_updated_at)}</small><strong>{selectedRoute.pickup.name}</strong><em>{selectedRoute.pickup.available_regular_bikes} regular · {selectedRoute.pickup.available_ebikes} e-bikes</em></span></div>
             <div><span className="station-dot dropoff-dot" /><span><small>Return · {timeAgo(selectedRoute.dropoff.availability_updated_at)}</small><strong>{selectedRoute.dropoff.name}</strong><em>{selectedRoute.dropoff.available_docks} open docks</em></span></div>
-            <button type="button" className="directions-button" onClick={() => setShowTurns(true)}><Navigation size={18} /><span>Directions</span><ChevronDown size={17} /></button>
+            <div className="desktop-route-actions">
+              <button type="button" className="route-preview-button" onClick={() => setShowTurns(true)}><Route size={17} /><span>Preview</span></button>
+              <button type="button" className="directions-button" onClick={startNavigation}><Navigation size={18} fill="currentColor" /><span>Start navigation</span><ChevronRight size={17} /></button>
+            </div>
           </div>
         )}
       </section>
+
+      {navigationActive && displayedNavigationStep && selectedRoute && (
+        <section className="navigation-hud" aria-label="Live navigation">
+          <div className="navigation-instruction" onTouchStart={(event) => { navigationTouchStartRef.current = event.touches[0]?.clientX ?? null; }} onTouchEnd={(event) => {
+            const start = navigationTouchStartRef.current;
+            const end = event.changedTouches[0]?.clientX;
+            navigationTouchStartRef.current = null;
+            if (start === null || end === undefined || Math.abs(end - start) < 45) return;
+            const base = navigationBrowseIndex ?? navigationStepIndex;
+            setNavigationBrowseIndex(Math.min(navigationSteps.length - 1, Math.max(0, base + (end < start ? 1 : -1))));
+          }}>
+            <span className="navigation-maneuver"><StepIcon step={displayedNavigationStep.step} /></span>
+            <span><small>{navigationBrowseIndex === null ? "Live" : `Previewing ${navigationBrowseIndex + 1}/${navigationSteps.length}`} · {displayedNavigationStep.mode === "bike" ? "Ride" : "Walk"} · {formatDistance(displayedNavigationStep.step.distance_m)}</small><strong>{displayedNavigationStep.step.instruction}</strong></span>
+            <button type="button" onClick={stopNavigation} aria-label="Stop navigation"><X size={20} /></button>
+          </div>
+          <div className="navigation-progress"><span style={{ width: `${Math.max(4, ((navigationStepIndex + 1) / Math.max(1, navigationSteps.length)) * 100)}%` }} /></div>
+          <div className="navigation-footer">
+            <span><strong>{selectedRoute.estimated_total_minutes} min</strong><small>estimated</small></span>
+            <span><strong>{navigationStepIndex + 1}/{navigationSteps.length}</strong><small>steps</small></span>
+            <span><strong>{navigationAccuracy ? `±${Math.round(navigationAccuracy)} m` : "Locating…"}</strong><small>GPS</small></span>
+            <button type="button" onClick={() => { setNavigationBrowseIndex(null); if (mapRef.current) { (mapRef.current.getSource("step-preview") as GeoJSONSource)?.setData(lineFeature([])); mapRef.current.easeTo({ center: navigationLocation ?? origin ?? MAP_CENTER, zoom: 17, pitch: 48, duration: 450 }); } }}><LocateFixed size={17} />{navigationBrowseIndex === null ? "Recenter" : "Back to live"}</button>
+          </div>
+        </section>
+      )}
+
+      {previewedStep && !navigationActive && (
+        <aside className="step-preview-card" aria-label="Route segment preview" onTouchStart={(event) => { previewTouchStartRef.current = event.touches[0]?.clientX ?? null; }} onTouchEnd={(event) => {
+          const start = previewTouchStartRef.current;
+          const end = event.changedTouches[0]?.clientX;
+          previewTouchStartRef.current = null;
+          if (start === null || end === undefined || Math.abs(end - start) < 45) return;
+          jumpPreview(end < start ? 1 : -1);
+        }}>
+          <button type="button" className="preview-jump" onClick={() => jumpPreview(-1)} disabled={previewedStepIndex === 0} aria-label="Previous segment"><ChevronLeft size={18} /></button>
+          <span className="step-preview-icon"><StepIcon step={previewedStep.step} /></span>
+          <span><small>{previewedStep.mode === "bike" ? "Ride segment" : "Walking segment"} · {formatDistance(previewedStep.step.distance_m)}</small><strong>{previewedStep.step.instruction}</strong></span>
+          <span className="preview-position">{previewedStepIndex === null ? "" : `${previewedStepIndex + 1}/${navigationSteps.length}`}</span>
+          <button type="button" className="preview-jump" onClick={() => jumpPreview(1)} disabled={previewedStepIndex === navigationSteps.length - 1} aria-label="Next segment"><ChevronRight size={18} /></button>
+          <button type="button" className="preview-all" onClick={() => { setPreviewedStep(null); setPreviewedStepIndex(null); setShowTurns(true); if (mapRef.current) (mapRef.current.getSource("step-preview") as GeoJSONSource)?.setData(lineFeature([])); }}>All steps</button>
+        </aside>
+      )}
 
       {selectedMapStation && (
         <aside className={`station-popover ${selectedMapStation.kind}`} aria-label={`${selectedMapStation.name} BIXI station`}>
@@ -662,8 +1101,8 @@ function App() {
         </aside>
       )}
 
-      {mapPickMode && <div className="map-pick-banner"><MapPin size={18} /><span>Tap the map to set your destination</span><button type="button" onClick={() => setMapPickMode(false)}><X size={18} /></button></div>}
-      {showTurns && selectedRoute && <TurnList option={selectedRoute} onClose={() => setShowTurns(false)} />}
+      {mapPickMode && <div className="map-pick-banner"><MapPin size={18} /><span>Tap the map to set your {mapPickMode === "origin" ? "start" : "destination"}</span><button type="button" onClick={() => setMapPickMode(null)}><X size={18} /></button></div>}
+      {showTurns && selectedRoute && <TurnList option={selectedRoute} onClose={() => { setShowTurns(false); setPreviewedStep(null); setPreviewedStepIndex(null); if (mapRef.current) (mapRef.current.getSource("step-preview") as GeoJSONSource)?.setData(lineFeature([])); }} onPreview={previewStep} onStart={startNavigation} />}
     </main>
   );
 }
