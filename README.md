@@ -74,6 +74,11 @@ npm install
 npm run dev
 ```
 
+The PWA deploys to GitHub Pages on pushes to `main` through
+`.github/workflows/deploy-pages.yml`. In the repository settings, set the Pages
+source to **GitHub Actions**. The production frontend uses the Fly API configured
+in the workflow.
+
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The app supports live BIXI route options, bike preference, current location, preset or map-picked destinations, station availability, route comparison, and turn details. Create a production bundle with `npm run build`; the output is written to `web/dist/` with its PWA manifest and service worker.
 
 Set `VITE_DETOUR_API_URL` at build time to use another backend origin. That frontend origin must also be included in the backend's `DETOUR_CORS_ORIGINS` setting.

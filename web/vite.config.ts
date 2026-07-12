@@ -16,14 +16,13 @@ export default defineConfig({
         background_color: "#f7f8f5",
         display: "standalone",
         orientation: "portrait",
-        start_url: "/",
+        start_url: ".",
         icons: [
-          { src: "/icon-1024.png", sizes: "1024x1024", type: "image/png", purpose: "any" },
-          { src: "/icon-1024.png", sizes: "1024x1024", type: "image/png", purpose: "maskable" }
+          { src: "icon-1024.png", sizes: "1024x1024", type: "image/png", purpose: "any" },
+          { src: "icon-1024.png", sizes: "1024x1024", type: "image/png", purpose: "maskable" }
         ]
       },
       workbox: {
-        navigateFallback: "/index.html",
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/basemaps\.cartocdn\.com\//,
