@@ -81,7 +81,7 @@ in the workflow and is available at <https://detour.yukai.dev/>.
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The app supports live BIXI route options, bike preference, current location, preset or map-picked destinations, station availability, route comparison, and turn details. Create a production bundle with `npm run build`; the output is written to `web/dist/` with its PWA manifest and service worker.
 
-Set `VITE_DETOUR_API_URL` at build time to use another backend origin. That frontend origin must also be included in the backend's `DETOUR_CORS_ORIGINS` setting.
+In Vite development mode the frontend uses `http://127.0.0.1:8001`, so start the local API before running `npm run dev`. Production builds use the hosted Fly API. Set `VITE_DETOUR_API_URL` at build time to override either default. That frontend origin must also be included in the backend's `DETOUR_CORS_ORIGINS` setting.
 
 ## HTTP API
 

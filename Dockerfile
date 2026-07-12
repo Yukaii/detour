@@ -13,7 +13,7 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-COPY detour_router.py detour_api.py prepare_graphs.py ./
+COPY detour_router.py detour_api.py prepare_graphs.py traffic_restrictions.py ./
 
 RUN useradd --create-home --uid 10001 detour \
     && mkdir -p /app/data /app/cache \
