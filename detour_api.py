@@ -10,6 +10,7 @@ import os
 import time
 import uuid
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -143,7 +144,24 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
 settings = Settings.from_env()
 route_cache = TtlCache()
-app = FastAPI(title="Detour API", version="0.3.0")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    started_at = time.perf_counter()
+    prepared_graphs()
+    logger.info(
+        json.dumps(
+            {
+                "event": "graphs_loaded",
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 1),
+            }
+        )
+    )
+    yield
+
+
+app = FastAPI(title="Detour API", version="0.3.0", lifespan=lifespan)
 app.add_middleware(RateLimitMiddleware, requests_per_minute=settings.rate_limit_per_minute)
 app.add_middleware(RequestLogMiddleware)
 app.add_middleware(

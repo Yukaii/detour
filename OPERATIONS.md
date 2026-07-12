@@ -33,7 +33,7 @@ Public API requests never contact Overpass or construct graphs. Build bike and w
 
 The builder writes each GraphML file atomically and publishes `manifest.json` only after both graphs succeed. The manifest declares coverage, version, generation time, filenames, and graph statistics. The API rejects coordinates outside that coverage and `/ready` returns `503` when the manifest or either graph is missing or empty.
 
-`/ready` also loads both graphs into memory on its first call. Deployment automation should call it before sending route traffic. On the initial 2 GB Fly machine this warm-up takes roughly 15 seconds; subsequent uncached route requests in the pilot area have been measured around 1-2 seconds.
+The API loads both graphs during process startup, and Fly checks `/ready` before sending traffic. On the initial 2 GB Fly machine this warm-up can take roughly 15-30 seconds; subsequent uncached route requests in the pilot area have been measured around 1-2 seconds. `/health` remains a liveness probe and does not imply that graph loading has completed.
 
 For Fly.io, upload new versioned graph files to `/app/data/graphs` first and replace `manifest.json` last. Restart the machine to clear the in-memory graph and response caches. Keep the previous version until the new bundle has passed a live route probe; rollback consists of restoring its manifest and restarting.
 
