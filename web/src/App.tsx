@@ -451,6 +451,8 @@ function Wordmark() {
 function App() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
+  const navigationControlRef = useRef<maplibregl.NavigationControl | null>(null);
+  const navigationControlPositionRef = useRef<"top-right" | "bottom-right">("bottom-right");
   const requestRef = useRef<AbortController | null>(null);
   const searchRef = useRef<AbortController | null>(null);
   const originSearchRef = useRef<AbortController | null>(null);
@@ -545,13 +547,33 @@ function App() {
       attributionControl: false
     });
     map.addControl(new maplibregl.AttributionControl({ compact: true }), "bottom-right");
-    map.addControl(
-      new maplibregl.NavigationControl({ showCompass: false }),
-      window.innerWidth < DESKTOP_BREAKPOINT ? "top-right" : "bottom-right"
-    );
+    const navigationControl = new maplibregl.NavigationControl({ showCompass: false });
+    const initialControlPosition: "top-right" | "bottom-right" = window.innerWidth < DESKTOP_BREAKPOINT ? "top-right" : "bottom-right";
+    navigationControlRef.current = navigationControl;
+    navigationControlPositionRef.current = initialControlPosition;
+    map.addControl(navigationControl, initialControlPosition);
     map.on("load", () => { addRouteLayers(map); setMapReady(true); });
     mapRef.current = map;
-    return () => { map.remove(); mapRef.current = null; };
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      navigationControlRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const updateNavigationControlPosition = () => {
+      const map = mapRef.current;
+      const navigationControl = navigationControlRef.current;
+      if (!map || !navigationControl) return;
+      const nextPosition: "top-right" | "bottom-right" = window.innerWidth < DESKTOP_BREAKPOINT ? "top-right" : "bottom-right";
+      if (nextPosition === navigationControlPositionRef.current) return;
+      map.removeControl(navigationControl);
+      map.addControl(navigationControl, nextPosition);
+      navigationControlPositionRef.current = nextPosition;
+    };
+    window.addEventListener("resize", updateNavigationControlPosition);
+    return () => window.removeEventListener("resize", updateNavigationControlPosition);
   }, []);
 
   useEffect(() => {

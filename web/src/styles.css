@@ -426,6 +426,7 @@ button { color: inherit; }
   box-shadow: 0 2px 8px rgba(0, 0, 0, .34);
 }
 [data-theme="dark"] .maplibregl-ctrl-group button { background-color: #182023; }
+[data-theme="dark"] .maplibregl-ctrl-group button + button { border-top-color: rgba(238, 244, 242, .06); }
 [data-theme="dark"] .maplibregl-ctrl-icon { filter: invert(1) brightness(.9); }
 [data-theme="dark"] .maplibregl-ctrl-attrib { background: rgba(24, 32, 35, .9); color: #aab8b7; }
 [data-theme="dark"] .maplibregl-ctrl-attrib a { color: #b7c7ff; }
@@ -592,6 +593,12 @@ button { color: inherit; }
   .maplibregl-ctrl-top-right .maplibregl-ctrl-group button {
     width: 38px;
     height: 40px;
+  }
+  .maplibregl-ctrl-top-right .maplibregl-ctrl-group button + button {
+    border-top-color: rgba(32, 38, 45, .1);
+  }
+  [data-theme="dark"] .maplibregl-ctrl-top-right .maplibregl-ctrl-group button + button {
+    border-top-color: rgba(238, 244, 242, .16);
   }
   .maplibregl-ctrl-bottom-right {
     right: 10px;
