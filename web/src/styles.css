@@ -245,6 +245,32 @@ button { color: inherit; }
 .map-pick-banner { position: absolute; z-index: 8; top: 72px; left: 50%; display: flex; align-items: center; gap: 8px; transform: translateX(-50%); padding: 9px 10px 9px 12px; border-radius: 6px; background: #20262d; color: #fff; box-shadow: 0 5px 18px rgba(0,0,0,.24); font-size: 12px; font-weight: 750; white-space: nowrap; }
 .map-pick-banner button { display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: #fff; cursor: pointer; }
 .is-picking .map { cursor: crosshair; }
+.is-picking .planner, .is-picking .top-bar, .is-picking .route-loading-banner, .is-picking .station-popover, .is-picking .step-preview-card { display: none; }
+
+.mobile-location-picker { position: fixed; z-index: 20; inset: 0; display: flex; flex-direction: column; padding: max(12px, env(safe-area-inset-top)) 14px max(14px, env(safe-area-inset-bottom)); background: #f8f9f6; }
+.mobile-location-picker > header { display: grid; grid-template-columns: 38px 1fr; align-items: center; gap: 8px; min-height: 50px; }
+.mobile-location-picker > header > button { display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 0; border-radius: 50%; background: #e9ede9; cursor: pointer; }
+.mobile-location-picker > header > div { display: grid; gap: 1px; }
+.mobile-location-picker > header small { color: #727c82; font-size: 9px; font-weight: 800; }
+.mobile-location-picker > header strong { font-size: 16px; }
+.mobile-location-search { display: grid; grid-template-columns: 22px minmax(0, 1fr) 30px; align-items: center; gap: 7px; min-height: 48px; margin-top: 8px; padding: 0 8px 0 12px; border: 1px solid #ccd3ce; border-radius: 8px; background: #fff; color: #687279; }
+.mobile-location-search input { min-width: 0; height: 46px; padding: 0; border: 0; outline: 0; background: transparent; font-size: 15px; font-weight: 650; }
+.mobile-location-search > button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: #eef1ee; cursor: pointer; }
+.mobile-picker-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
+.mobile-picker-actions button { display: grid; grid-template-columns: 23px 1fr; align-items: center; gap: 7px; min-height: 54px; padding: 8px 10px; border: 1px solid #d4d9d5; border-radius: 8px; background: #fff; color: #165df5; text-align: left; cursor: pointer; }
+.mobile-picker-actions span { display: grid; gap: 2px; }
+.mobile-picker-actions strong { color: #20262d; font-size: 11px; }
+.mobile-picker-actions small { color: #747e84; font-size: 9px; }
+.mobile-picker-results { min-height: 0; margin-top: 10px; overflow-y: auto; border-top: 1px solid #dce1dd; }
+.mobile-picker-results > button { display: grid; grid-template-columns: 22px minmax(0, 1fr) 18px; width: 100%; align-items: center; gap: 9px; padding: 12px 6px; border: 0; border-bottom: 1px solid #e3e7e3; background: transparent; text-align: left; cursor: pointer; }
+.mobile-picker-results > button > span { display: grid; gap: 2px; min-width: 0; }
+.mobile-picker-results strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-picker-results small { color: #727c82; font-size: 10px; }
+.mobile-picker-results .out-of-coverage { opacity: .65; }
+
+@media (max-width: 799px) {
+  .desktop-place-results { display: none; }
+}
 
 .turn-sheet { position: absolute; z-index: 10; inset: 8vh 0 0; display: flex; flex-direction: column; border-top: 1px solid #d8ddd9; border-radius: 8px 8px 0 0; background: #f8f9f6; box-shadow: 0 -8px 30px rgba(25, 32, 38, .2); }
 .turn-header { display: flex; align-items: center; justify-content: space-between; padding: 16px; border-bottom: 1px solid #dce1dc; }
@@ -296,6 +322,7 @@ button { color: inherit; }
 .preview-all { grid-column: 2 / -1; min-height: 28px; padding: 0 9px; border: 0; border-radius: 5px; background: #20262d; color: #fff; font-size: 9px; font-weight: 800; cursor: pointer; }
 
 @media (min-width: 800px) {
+  .mobile-location-picker { display: none; }
   .top-bar {
     left: auto;
     right: 18px;

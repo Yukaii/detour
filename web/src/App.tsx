@@ -860,6 +860,39 @@ function App() {
         </button>
       </header>
 
+      {window.innerWidth < DESKTOP_BREAKPOINT && (originFocused || destinationFocused) && (
+        <section className="mobile-location-picker" role="dialog" aria-modal="true" aria-label={originFocused ? "Choose start location" : "Choose destination"}>
+          <header>
+            <button type="button" onClick={() => { setOriginFocused(false); setDestinationFocused(false); }} aria-label="Close location search"><ChevronLeft size={21} /></button>
+            <div><small>{originFocused ? "START" : "DESTINATION"}</small><strong>{originFocused ? "Choose a start" : "Choose a destination"}</strong></div>
+          </header>
+          <div className="mobile-location-search">
+            <Search size={19} />
+            <input autoFocus value={originFocused ? originSearchQuery : searchQuery} onChange={(event) => originFocused ? setOriginSearchQuery(event.target.value) : setSearchQuery(event.target.value)} aria-label={originFocused ? "Search start location" : "Search destination"} placeholder="Search places" autoComplete="off" spellCheck={false} />
+            {(originFocused ? originSearchQuery : searchQuery) && <button type="button" onClick={() => originFocused ? setOriginSearchQuery("") : setSearchQuery("")} aria-label="Clear search"><X size={16} /></button>}
+          </div>
+          <div className="mobile-picker-actions">
+            <button type="button" onClick={() => { const field = originFocused ? "origin" : "destination"; setOriginFocused(false); setDestinationFocused(false); useGpsLocation(field); }}>
+              {gpsField === (originFocused ? "origin" : "destination") ? <Loader2 className="spin" size={19} /> : <LocateFixed size={19} />}<span><strong>Current location</strong><small>Use device GPS</small></span>
+            </button>
+            <button type="button" onClick={() => { const field = originFocused ? "origin" : "destination"; setOriginFocused(false); setDestinationFocused(false); setMapPickMode(field); }}>
+              <MapPin size={19} /><span><strong>Pick on map</strong><small>Drop a pin</small></span>
+            </button>
+          </div>
+          <div className="mobile-picker-results">
+            <div className="place-results-label">{(originFocused ? originSearchQuery : searchQuery).trim().length < 2 ? "Popular nearby" : "Search results"}</div>
+            {(originFocused ? originSearching : searching) && <div className="place-results-status"><Loader2 className="spin" size={15} />Searching…</div>}
+            {!(originFocused ? originSearching : searching) && (originFocused ? originDisplayResults : displayResults).length === 0 && <div className="place-results-status">No places found in central Montréal</div>}
+            {(originFocused ? originDisplayResults : displayResults).map((place) => {
+              const covered = inCoverage(place);
+              return <button type="button" key={place.id} className={covered ? undefined : "out-of-coverage"} onClick={() => originFocused ? selectOriginPlace(place) : selectPlace(place)}>
+                <MapPin size={17} /><span><strong>{place.name}</strong><small>{covered ? place.detail : "Outside current coverage"}</small></span><ChevronRight size={17} />
+              </button>;
+            })}
+          </div>
+        </section>
+      )}
+
       {loading && (
         <div className="route-loading-banner" role="status" aria-live="polite">
           <Loader2 className="spin" size={17} />
@@ -881,7 +914,7 @@ function App() {
                   value={originFocused ? originSearchQuery : originLabel}
                   onChange={(event) => { setOriginSearchQuery(event.target.value); if (!originFocused) setOriginFocused(true); }}
                   onFocus={() => { setDestinationFocused(false); setOriginFocused(true); setOriginSearchQuery(origin ? originLabel : ""); }}
-                  onBlur={() => { window.setTimeout(() => setOriginFocused(false), 120); }}
+                  onBlur={() => { if (window.innerWidth >= DESKTOP_BREAKPOINT) window.setTimeout(() => setOriginFocused(false), 120); }}
                   aria-label="Start location"
                   placeholder="Choose a start"
                   autoComplete="off"
@@ -890,7 +923,7 @@ function App() {
               </span>
               {origin && <button type="button" className="clear-location-button" onMouseDown={(event) => event.preventDefault()} onClick={() => clearLocation("origin")} aria-label="Clear start location"><X size={15} /></button>}
               {originFocused && (
-                <div className="place-results origin-results">
+                <div className="place-results origin-results desktop-place-results">
                   <button type="button" className="current-location-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { setOriginFocused(false); useGpsLocation("origin"); }}>
                     {gpsField === "origin" ? <Loader2 className="spin" size={16} /> : <LocateFixed size={16} />}<span><strong>Current location</strong><small>Use this device’s GPS</small></span>
                   </button>
@@ -922,9 +955,7 @@ function App() {
                   setDestinationFocused(true);
                   setSearchQuery(destinationName === "Locating…" ? "" : destinationName);
                 }}
-                onBlur={() => {
-                  window.setTimeout(() => setDestinationFocused(false), 120);
-                }}
+                onBlur={() => { if (window.innerWidth >= DESKTOP_BREAKPOINT) window.setTimeout(() => setDestinationFocused(false), 120); }}
                 aria-label="Destination"
                 placeholder="Where to?"
                 autoComplete="off"
@@ -932,7 +963,7 @@ function App() {
               />
               {destination && <button type="button" className="clear-location-button" onMouseDown={(event) => event.preventDefault()} onClick={() => clearLocation("destination")} aria-label="Clear destination"><X size={15} /></button>}
               {showResults && (
-                <div className="place-results">
+                <div className="place-results desktop-place-results">
                   <button type="button" className="current-location-result" onMouseDown={(event) => event.preventDefault()} onClick={() => { setDestinationFocused(false); useGpsLocation("destination"); }}>
                     {gpsField === "destination" ? <Loader2 className="spin" size={16} /> : <LocateFixed size={16} />}<span><strong>Current location</strong><small>Use this device’s GPS</small></span>
                   </button>
