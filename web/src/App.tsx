@@ -86,6 +86,7 @@ function addRouteLayers(map: MapLibreMap): void {
   map.addSource("bike-route", { type: "geojson", data: lineFeature([]) });
   map.addSource("walk-dropoff", { type: "geojson", data: lineFeature([]) });
   map.addSource("route-points", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addSource("user-location", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
     id: "walk-pickup",
     type: "line",
@@ -115,6 +116,31 @@ function addRouteLayers(map: MapLibreMap): void {
     layout: { "line-cap": "round", "line-join": "round" }
   });
   map.addLayer({
+    id: "user-location-dot",
+    type: "circle",
+    source: "user-location",
+    paint: {
+      "circle-radius": 8,
+      "circle-color": "#165df5",
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 3,
+      "circle-opacity": 0.92
+    }
+  });
+  map.addLayer({
+    id: "user-location-pulse",
+    type: "circle",
+    source: "user-location",
+    paint: {
+      "circle-radius": 18,
+      "circle-color": "#165df5",
+      "circle-opacity": 0.18,
+      "circle-stroke-color": "#165df5",
+      "circle-stroke-width": 2,
+      "circle-stroke-opacity": 0.12
+    }
+  });
+  map.addLayer({
     id: "route-points-rings",
     type: "circle",
     source: "route-points",
@@ -132,6 +158,12 @@ function clearMapRoute(map: MapLibreMap): void {
   (map.getSource("bike-route") as GeoJSONSource)?.setData(lineFeature([]));
   (map.getSource("walk-dropoff") as GeoJSONSource)?.setData(lineFeature([]));
   (map.getSource("route-points") as GeoJSONSource)?.setData({ type: "FeatureCollection", features: [] });
+}
+
+function updateUserLocation(map: MapLibreMap, origin: Coordinate | null): void {
+  (map.getSource("user-location") as GeoJSONSource)?.setData(
+    origin ? pointFeature(origin, "user") : { type: "FeatureCollection", features: [] }
+  );
 }
 
 function updateMapRoute(map: MapLibreMap, option: RouteOption, origin: Coordinate, destination: Coordinate): void {
@@ -295,6 +327,7 @@ function App() {
 
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
+    updateUserLocation(mapRef.current, origin);
     if (!selectedRoute || !origin || !destination) {
       clearMapRoute(mapRef.current);
       return;
