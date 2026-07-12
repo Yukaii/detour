@@ -38,7 +38,9 @@ from detour_router import (
     load_bixi_stations,
     load_prepared_graph,
     parse_lat_lon,
+    route_edge_sequence,
 )
+from traffic_restrictions import RestrictionSnapshot, TrafficRestrictionProvider, restriction_weight
 
 
 logger = logging.getLogger("detour.api")
@@ -51,6 +53,13 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
     return value
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name, str(default)).strip().lower()
+    if value not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
+        raise ValueError(f"{name} must be a boolean value.")
+    return value in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     cors_origins: tuple[str, ...]
@@ -60,6 +69,10 @@ class Settings:
     max_route_distance_km: int
     graph_manifest_path: Path
     photon_url: str
+    traffic_restrictions_enabled: bool
+    traffic_restrictions_url: str
+    traffic_restrictions_ttl_seconds: int
+    traffic_restrictions_stale_seconds: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,6 +89,10 @@ class Settings:
             max_route_distance_km=env_int("DETOUR_MAX_ROUTE_DISTANCE_KM", 35),
             graph_manifest_path=Path(os.getenv("DETOUR_GRAPH_MANIFEST_PATH", "data/graphs/manifest.json")),
             photon_url=os.getenv("DETOUR_PHOTON_URL", "https://photon.komoot.io").rstrip("/"),
+            traffic_restrictions_enabled=env_bool("DETOUR_TRAFFIC_RESTRICTIONS_ENABLED", False),
+            traffic_restrictions_url=os.getenv("DETOUR_TRAFFIC_RESTRICTIONS_URL", ""),
+            traffic_restrictions_ttl_seconds=env_int("DETOUR_TRAFFIC_RESTRICTIONS_TTL_SECONDS", 90),
+            traffic_restrictions_stale_seconds=env_int("DETOUR_TRAFFIC_RESTRICTIONS_STALE_SECONDS", 300),
         )
 
 
@@ -154,6 +171,12 @@ settings = Settings.from_env()
 route_cache = TtlCache()
 places_cache = TtlCache()
 stations_cache = TtlCache()
+traffic_restrictions = TrafficRestrictionProvider(
+    enabled=settings.traffic_restrictions_enabled,
+    url=settings.traffic_restrictions_url,
+    ttl_seconds=settings.traffic_restrictions_ttl_seconds,
+    stale_seconds=settings.traffic_restrictions_stale_seconds,
+)
 
 
 @asynccontextmanager
@@ -292,10 +315,20 @@ def bixi_response(
     options: int,
     pickup_station_id: str | None = None,
     dropoff_station_id: str | None = None,
+    restriction_snapshot: RestrictionSnapshot | None = None,
 ) -> dict[str, Any]:
     args = router_args(origin, destination, bike_preference, max_walk_minutes, pickup_station_id, dropoff_station_id)
     bike_graph, walk_graph = prepared_graphs()
-    results, pickups, dropoffs = bixi_route_plan(args, bike_graph, walk_graph, option_limit=options)
+    restriction_snapshot = restriction_snapshot or traffic_restrictions.snapshot(bike_graph)
+    bike_weight = restriction_weight("bike_path_first_cost", restriction_snapshot)
+    results, pickups, dropoffs = bixi_route_plan(
+        args, bike_graph, walk_graph, option_limit=options, bike_weight=bike_weight
+    )
+    route_edges = {
+        (u, v, key)
+        for result in results
+        for u, v, key, _ in route_edge_sequence(bike_graph, result["route"], bike_weight)
+    }
     def station_payload(station: dict[str, Any], kind: str) -> dict[str, Any]:
         return {
             "station_id": station["station_id"],
@@ -319,6 +352,7 @@ def bixi_response(
         "options": [bixi_option_payload(result, bike_graph, walk_graph) for result in results],
         "nearby_stations": [station_payload(station, "pickup") for station in pickups]
         + [station_payload(station, "dropoff") for station in dropoffs],
+        "traffic_restrictions": restriction_snapshot.payload(route_edges),
     }
 
 
@@ -514,13 +548,20 @@ def bixi_routes(
     parsed_origin = parse_point(origin, "origin")
     parsed_destination = parse_point(destination, "destination")
     validate_route_request(parsed_origin, parsed_destination)
-    cache_key = (parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options, pickup_station_id, dropoff_station_id)
-
     try:
+        bike_graph = prepared_graphs()[0] if traffic_restrictions.enabled else None
+        restriction_snapshot = traffic_restrictions.snapshot(bike_graph)
+        cache_key = (
+            parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options,
+            pickup_station_id, dropoff_station_id, restriction_snapshot.version,
+        )
         payload, cache_hit = route_cache.get_or_set(
             cache_key,
             settings.route_cache_ttl_seconds,
-            lambda: bixi_response(parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options, pickup_station_id, dropoff_station_id),
+            lambda: bixi_response(
+                parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options,
+                pickup_station_id, dropoff_station_id, restriction_snapshot,
+            ),
         )
     except (RuntimeError, TimeoutError, URLError) as error:
         raise HTTPException(status_code=503, detail=f"Routing data is temporarily unavailable: {error}") from error

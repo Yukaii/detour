@@ -22,6 +22,8 @@ import networkx as nx
 import numpy as np
 import osmnx as ox
 
+from traffic_restrictions import EdgeWeight
+
 
 MONTREAL_BBOX = {
     "min_lat": 45.40,
@@ -250,18 +252,27 @@ def load_prepared_graph(path: Path, network_type: str) -> nx.MultiDiGraph:
     return graph
 
 
-def best_edge(graph: nx.MultiDiGraph, u: int, v: int, weight: str) -> tuple[Any, dict[str, Any]]:
+def edge_weight_value(weight: EdgeWeight, u: Any, v: Any, key: Any, data: dict[str, Any]) -> float | None:
+    if callable(weight):
+        return weight(u, v, key, data)
+    return float(data.get(weight, data.get("length", 1.0)))
+
+
+def best_edge(graph: nx.MultiDiGraph, u: int, v: int, weight: EdgeWeight) -> tuple[Any, dict[str, Any]]:
     edges = graph.get_edge_data(u, v)
     if not edges:
         raise RuntimeError(f"Route references missing edge {u}->{v}.")
-    return min(edges.items(), key=lambda item: float(item[1].get(weight, item[1].get("length", 1.0))))
+    candidates = [(key, data) for key, data in edges.items() if edge_weight_value(weight, u, v, key, data) is not None]
+    if not candidates:
+        raise RuntimeError(f"Route references blocked edge {u}->{v}.")
+    return min(candidates, key=lambda item: edge_weight_value(weight, u, v, item[0], item[1]) or 0)
 
 
-def best_edge_data(graph: nx.MultiDiGraph, u: int, v: int, weight: str) -> dict[str, Any]:
+def best_edge_data(graph: nx.MultiDiGraph, u: int, v: int, weight: EdgeWeight) -> dict[str, Any]:
     return best_edge(graph, u, v, weight)[1]
 
 
-def route_edge_sequence(graph: nx.MultiDiGraph, route: list[int], weight: str) -> list[tuple[int, int, Any, dict[str, Any]]]:
+def route_edge_sequence(graph: nx.MultiDiGraph, route: list[int], weight: EdgeWeight) -> list[tuple[int, int, Any, dict[str, Any]]]:
     return [(u, v, *best_edge(graph, u, v, weight)) for u, v in zip(route[:-1], route[1:])]
 
 
@@ -275,7 +286,7 @@ def edge_coordinates(graph: nx.MultiDiGraph, u: int, v: int, data: dict[str, Any
     ]
 
 
-def route_points(graph: nx.MultiDiGraph, route: list[int], weight: str) -> list[list[float]]:
+def route_points(graph: nx.MultiDiGraph, route: list[int], weight: EdgeWeight) -> list[list[float]]:
     points: list[list[float]] = []
     for u, v, _, data in route_edge_sequence(graph, route, weight):
         coords = edge_coordinates(graph, u, v, data)
@@ -336,7 +347,7 @@ def maneuver_instruction(maneuver: str, street_name: str, first: bool) -> str:
     return f"{verbs[maneuver]} {street_name}"
 
 
-def route_maneuvers(graph: nx.MultiDiGraph, route: list[int], weight: str) -> list[dict[str, Any]]:
+def route_maneuvers(graph: nx.MultiDiGraph, route: list[int], weight: EdgeWeight) -> list[dict[str, Any]]:
     """Create compact turn instructions from the exact OSM edges selected for a route."""
     edges = route_edge_sequence(graph, route, weight)
     if not edges:
@@ -585,17 +596,17 @@ def nearest_station_snapshot(
     )
 
 
-def summarize_route(graph: nx.MultiDiGraph, route: list[int], weight: str) -> dict[str, Any]:
+def summarize_route(graph: nx.MultiDiGraph, route: list[int], weight: EdgeWeight) -> dict[str, Any]:
     total_length = 0.0
     weighted_cost = 0.0
     class_lengths: Counter[str] = Counter()
     names: list[str] = []
 
     for u, v in zip(route[:-1], route[1:]):
-        data = best_edge_data(graph, u, v, weight)
+        key, data = best_edge(graph, u, v, weight)
         length = float(data.get("length", 0.0))
         total_length += length
-        weighted_cost += float(data.get(weight, length))
+        weighted_cost += float(edge_weight_value(weight, u, v, key, data) or length)
         class_lengths[str(data.get("detour_class", "unknown"))] += length
         name = data.get("name")
         if isinstance(name, list):
@@ -709,9 +720,15 @@ def line_feature(
     }
 
 
-def route_between(graph: nx.MultiDiGraph, origin: tuple[float, float], destination: tuple[float, float], weight: str) -> list[int]:
+def route_between(graph: nx.MultiDiGraph, origin: tuple[float, float], destination: tuple[float, float], weight: EdgeWeight) -> list[int]:
     start = nearest_node(graph, origin)
     end = nearest_node(graph, destination)
+    if callable(weight):
+        def multigraph_weight(u: Any, v: Any, edges: dict[Any, dict[str, Any]]) -> float | None:
+            costs = [weight(u, v, key, data) for key, data in edges.items()]
+            usable = [cost for cost in costs if cost is not None]
+            return min(usable) if usable else None
+        return nx.shortest_path(graph, start, end, weight=multigraph_weight)
     return nx.shortest_path(graph, start, end, weight=weight)
 
 
@@ -738,6 +755,7 @@ def bixi_option_payload(
     pickup = result["pickup"]
     dropoff = result["dropoff"]
     bike_summary = result["summary"]
+    bike_weight = result.get("bike_weight", "bike_path_first_cost")
     estimated_total_minutes = round(
         pickup["walk_distance_m"] / WALKING_SPEED_M_PER_MIN
         + bike_summary["distance_m"] / CYCLING_SPEED_M_PER_MIN
@@ -773,8 +791,8 @@ def bixi_option_payload(
             },
             "bike": {
                 **bike_summary,
-                "coordinates": route_points(bike_graph, result["route"], "bike_path_first_cost"),
-                "steps": route_maneuvers(bike_graph, result["route"], "bike_path_first_cost"),
+                "coordinates": route_points(bike_graph, result["route"], bike_weight),
+                "steps": route_maneuvers(bike_graph, result["route"], bike_weight),
             },
             "walk_to_destination": {
                 "distance_m": dropoff["walk_distance_m"],
@@ -829,6 +847,7 @@ def bixi_route_plan(
     bike_graph: nx.MultiDiGraph,
     walk_graph: nx.MultiDiGraph,
     option_limit: int = 3,
+    bike_weight: EdgeWeight = "bike_path_first_cost",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     stations = load_bixi_stations(args.bixi_gbfs_url, args.gbfs_language)
     max_walk_m = args.max_walk_minutes * WALKING_SPEED_M_PER_MIN
@@ -865,10 +884,10 @@ def bixi_route_plan(
     for pickup in pickups:
         for dropoff in dropoffs:
             try:
-                route = route_between(bike_graph, pickup["point"], dropoff["point"], "bike_path_first_cost")
+                route = route_between(bike_graph, pickup["point"], dropoff["point"], bike_weight)
             except nx.NetworkXNoPath:
                 continue
-            summary = summarize_route(bike_graph, route, "bike_path_first_cost")
+            summary = summarize_route(bike_graph, route, bike_weight)
             total_score = pickup["station_score"] + dropoff["station_score"] + float(summary["weighted_cost"])
             total_walk_m = pickup["walk_distance_m"] + dropoff["walk_distance_m"]
             options.append(
@@ -879,6 +898,7 @@ def bixi_route_plan(
                 "summary": summary,
                 "total_score": total_score,
                 "total_walk_m": total_walk_m,
+                "bike_weight": bike_weight,
                 }
             )
 
@@ -892,8 +912,9 @@ def bixi_route_options(
     bike_graph: nx.MultiDiGraph,
     walk_graph: nx.MultiDiGraph,
     option_limit: int = 3,
+    bike_weight: EdgeWeight = "bike_path_first_cost",
 ) -> list[dict[str, Any]]:
-    options, _, _ = bixi_route_plan(args, bike_graph, walk_graph, option_limit)
+    options, _, _ = bixi_route_plan(args, bike_graph, walk_graph, option_limit, bike_weight)
     return options
 
 

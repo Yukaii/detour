@@ -100,6 +100,8 @@ The BIXI endpoint returns up to five ranked station-pair options. Each option in
 
 Every leg also includes `steps[]`, generated from the exact OSM edges selected by Détour. A step contains an instruction, maneuver type, street name, distance, coordinate, and the selected OSM edge keys. This is the contract for the future iOS turn-list, progress tracking, and voice-guidance UI; it does not delegate route selection to Apple or Google Maps.
 
+Route responses also include `traffic_restrictions`. Phase 1 of the live restriction overlay is fail-open and disabled by default while Montréal's documented CIFS endpoint is unavailable. See [OPERATIONS.md](/Users/yukai/Projects/Personal/detour/OPERATIONS.md) for activation settings and safety boundaries.
+
 Run the automated checks with:
 
 ```bash

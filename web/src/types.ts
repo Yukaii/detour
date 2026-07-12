@@ -92,4 +92,14 @@ export interface RouteResponse {
   max_walk_minutes: number;
   options: RouteOption[];
   nearby_stations: NearbyStation[];
+  traffic_restrictions: {
+    status: "disabled" | "active" | "stale" | "unavailable";
+    version: string;
+    fetched_at: string;
+    feed_timestamp: string | null;
+    active_restriction_count: number;
+    matched_edge_count: number;
+    route_restriction_ids: string[];
+    detail: string | null;
+  };
 }

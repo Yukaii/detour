@@ -17,8 +17,26 @@ The API listens on `http://localhost:8001`. Docker volumes persist the downloade
 | `DETOUR_RATE_LIMIT_PER_MINUTE` | `30` | Per-client request ceiling in the single API process. |
 | `DETOUR_MAX_ROUTE_DISTANCE_KM` | `35` | Maximum straight-line distance between route endpoints. |
 | `DETOUR_GRAPH_MANIFEST_PATH` | `data/graphs/manifest.json` | Versioned prepared-graph bundle loaded by the API. |
+| `DETOUR_TRAFFIC_RESTRICTIONS_ENABLED` | `false` | Enable polling of the configured CIFS-compatible restriction feed. Keep disabled until a working Montréal endpoint is verified. |
+| `DETOUR_TRAFFIC_RESTRICTIONS_URL` | empty | HTTPS URL for the CIFS-compatible JSON feed. |
+| `DETOUR_TRAFFIC_RESTRICTIONS_TTL_SECONDS` | `90` | Per-process lifetime of a restriction snapshot. |
+| `DETOUR_TRAFFIC_RESTRICTIONS_STALE_SECONDS` | `300` | Maximum accepted age of a timestamped feed before restrictions fail open. |
 
 The v1 API accepts endpoints only inside the hard-coded Montréal service bounds. This prevents public requests from downloading arbitrary global OSM graphs and exhausting disk space. Expand the boundary deliberately as service coverage grows.
+
+## Live traffic restriction overlay
+
+Phase 1 support is implemented but disabled by default because Montréal's published CIFS endpoint currently returns `404`. When enabled with a verified replacement URL, the API polls and caches the feed separately from route responses, filters events by their active time window, spatially matches event polylines to OSM edges, and applies routing penalties without mutating the prepared graph.
+
+Confirmed full closures exclude matched edges. Bicycle/lane obstructions receive a large penalty, and ambiguous obstructions receive a smaller caution penalty. Stale, malformed, or unavailable feeds fail open: routes remain available and the `traffic_restrictions` response object reports the snapshot status, timestamps, counts, version, and any restriction IDs on the selected options. The snapshot version is part of the route-cache key so a refreshed feed cannot reuse a route from an older restriction state.
+
+Before enabling Phase 2 in production:
+
+- verify the replacement feed URL and capture representative payload fixtures;
+- manually review edge matching around divided roads, intersections, and parallel cycle tracks;
+- calibrate severity mapping against the feed's actual type/subtype vocabulary;
+- add the daily construction-permit dataset only as a lower-confidence supplemental source;
+- add upstream freshness and failure metrics.
 
 ## Routing graph lifecycle
 
