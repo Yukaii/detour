@@ -148,6 +148,8 @@ button { color: inherit; }
 }
 .place-map-pick { border-top: 1px solid #e4e7e4 !important; color: #165df5; }
 .place-map-pick strong { color: #165df5; }
+.place-results button.out-of-coverage { opacity: 0.72; }
+.place-results button.out-of-coverage small { color: #b45309; }
 
 .preference-row { display: flex; align-items: center; gap: 9px; padding: 9px 0; }
 .preference-row > span { color: #687279; font-size: 11px; font-weight: 800; text-transform: uppercase; }

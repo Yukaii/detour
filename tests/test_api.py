@@ -4,12 +4,20 @@ import pytest
 from fastapi import HTTPException
 
 import detour_api
-from detour_api import TtlCache, bixi_routes, health, ready, validate_route_request
+from detour_api import TtlCache, bixi_routes, health, places_reverse, places_search, ready, validate_route_request
 
 
 def fake_graph_artifacts():
     return (
         {"version": "test", "bounds": {"south": 45.40, "west": -73.99, "north": 45.71, "east": -73.47}},
+        None,
+        None,
+    )
+
+
+def pilot_graph_artifacts():
+    return (
+        {"version": "test", "bounds": {"south": 45.50, "west": -73.65, "north": 45.55, "east": -73.55}},
         None,
         None,
     )
@@ -89,3 +97,84 @@ def test_readiness_fails_without_graph_artifacts(monkeypatch) -> None:
 
     assert response.status_code == 503
     assert json.loads(response.body)["detail"] == "missing graphs"
+
+
+def test_places_search_uses_nominatim_and_marks_coverage(monkeypatch) -> None:
+    monkeypatch.setattr(detour_api, "places_cache", TtlCache())
+    monkeypatch.setattr(detour_api, "graph_artifact_paths", pilot_graph_artifacts)
+    monkeypatch.setattr(
+        detour_api,
+        "nominatim_get",
+        lambda path, params: [
+            {
+                "place_id": 1,
+                "lat": "45.5232",
+                "lon": "-73.6012",
+                "name": "Mile End",
+                "display_name": "Mile End, Montréal, Québec, Canada",
+                "address": {"neighbourhood": "Mile End"},
+            },
+            {
+                "place_id": 2,
+                "lat": "45.5088",
+                "lon": "-73.5400",
+                "name": "Old Port",
+                "display_name": "Old Port, Montréal, Québec, Canada",
+                "address": {"suburb": "Vieux-Montréal"},
+            },
+        ],
+    )
+
+    response = places_search(q="mile", limit=8)
+    body = json.loads(response.body)
+
+    assert response.headers["X-Detour-Cache"] == "MISS"
+    assert body["results"][0]["name"] == "Mile End"
+    assert body["results"][0]["in_coverage"] is True
+    assert body["results"][1]["name"] == "Old Port"
+    assert body["results"][1]["in_coverage"] is False
+
+
+def test_places_search_caches_results(monkeypatch) -> None:
+    monkeypatch.setattr(detour_api, "places_cache", TtlCache())
+    monkeypatch.setattr(detour_api, "graph_artifact_paths", fake_graph_artifacts)
+    calls = 0
+
+    def fake_nominatim(path, params):
+        nonlocal calls
+        calls += 1
+        return [{"place_id": 9, "lat": "45.52", "lon": "-73.60", "name": "Test", "display_name": "Test, Montréal"}]
+
+    monkeypatch.setattr(detour_api, "nominatim_get", fake_nominatim)
+
+    first = places_search(q="test", limit=5)
+    second = places_search(q="test", limit=5)
+
+    assert calls == 1
+    assert first.headers["X-Detour-Cache"] == "MISS"
+    assert second.headers["X-Detour-Cache"] == "HIT"
+
+
+def test_places_reverse_formats_place(monkeypatch) -> None:
+    monkeypatch.setattr(detour_api, "places_cache", TtlCache())
+    monkeypatch.setattr(detour_api, "graph_artifact_paths", pilot_graph_artifacts)
+    monkeypatch.setattr(
+        detour_api,
+        "nominatim_get",
+        lambda path, params: {
+            "place_id": 3,
+            "lat": "45.5361",
+            "lon": "-73.6148",
+            "name": "Jean-Talon Market",
+            "display_name": "Jean-Talon Market, Montréal, Québec, Canada",
+            "address": {"neighbourhood": "Little Italy"},
+        },
+    )
+
+    response = places_reverse(lat=45.5361, lon=-73.6148)
+    body = json.loads(response.body)
+
+    assert body["name"] == "Jean-Talon Market"
+    assert body["detail"] == "Little Italy"
+    assert body["coordinate"] == [-73.6148, 45.5361]
+    assert body["in_coverage"] is True

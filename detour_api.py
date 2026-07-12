@@ -8,6 +8,8 @@ import logging
 import math
 import os
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
@@ -18,7 +20,7 @@ from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
 from typing import Any, Callable
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,9 +53,12 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
 class Settings:
     cors_origins: tuple[str, ...]
     route_cache_ttl_seconds: int
+    places_cache_ttl_seconds: int
     rate_limit_per_minute: int
     max_route_distance_km: int
     graph_manifest_path: Path
+    nominatim_url: str
+    nominatim_user_agent: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -65,9 +70,15 @@ class Settings:
         return cls(
             cors_origins=origins,
             route_cache_ttl_seconds=env_int("DETOUR_ROUTE_CACHE_TTL_SECONDS", 60),
+            places_cache_ttl_seconds=env_int("DETOUR_PLACES_CACHE_TTL_SECONDS", 300),
             rate_limit_per_minute=env_int("DETOUR_RATE_LIMIT_PER_MINUTE", 30),
             max_route_distance_km=env_int("DETOUR_MAX_ROUTE_DISTANCE_KM", 35),
             graph_manifest_path=Path(os.getenv("DETOUR_GRAPH_MANIFEST_PATH", "data/graphs/manifest.json")),
+            nominatim_url=os.getenv("DETOUR_NOMINATIM_URL", "https://nominatim.openstreetmap.org").rstrip("/"),
+            nominatim_user_agent=os.getenv(
+                "DETOUR_NOMINATIM_USER_AGENT",
+                "DetourMontreal/0.3 (https://github.com/anomalyco/detour; contact@detour.local)",
+            ),
         )
 
 
@@ -144,6 +155,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
 settings = Settings.from_env()
 route_cache = TtlCache()
+places_cache = TtlCache()
 
 
 @asynccontextmanager
@@ -291,6 +303,130 @@ def bixi_response(
     }
 
 
+def coverage_bounds() -> dict[str, float] | None:
+    try:
+        manifest, _, _ = graph_artifact_paths()
+    except RuntimeError:
+        return None
+    bounds = manifest["bounds"]
+    return {
+        "south": float(bounds["south"]),
+        "west": float(bounds["west"]),
+        "north": float(bounds["north"]),
+        "east": float(bounds["east"]),
+    }
+
+
+def point_in_coverage(latitude: float, longitude: float) -> bool:
+    bounds = coverage_bounds()
+    if bounds is None:
+        return (
+            MONTREAL_BBOX["min_lat"] <= latitude <= MONTREAL_BBOX["max_lat"]
+            and MONTREAL_BBOX["min_lon"] <= longitude <= MONTREAL_BBOX["max_lon"]
+        )
+    return (
+        bounds["south"] <= latitude <= bounds["north"]
+        and bounds["west"] <= longitude <= bounds["east"]
+    )
+
+
+def format_place(item: dict[str, Any]) -> dict[str, Any]:
+    address = item.get("address") or {}
+    display_name = str(item.get("display_name") or "")
+    parts = [part.strip() for part in display_name.split(",") if part.strip()]
+    name = str(item.get("name") or (parts[0] if parts else "Selected place"))
+    detail = (
+        address.get("neighbourhood")
+        or address.get("suburb")
+        or address.get("borough")
+        or address.get("quarter")
+        or address.get("city_district")
+        or address.get("road")
+        or ", ".join(parts[1:3])
+        or "Montréal"
+    )
+    latitude = float(item["lat"])
+    longitude = float(item["lon"])
+    return {
+        "id": str(item.get("place_id") or f"{latitude:.5f},{longitude:.5f}"),
+        "name": name,
+        "detail": detail,
+        "coordinate": [longitude, latitude],
+        "in_coverage": point_in_coverage(latitude, longitude),
+    }
+
+
+def nominatim_get(path: str, params: dict[str, str]) -> Any:
+    query = urllib.parse.urlencode(params)
+    request = urllib.request.Request(
+        f"{settings.nominatim_url}{path}?{query}",
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "en",
+            "User-Agent": settings.nominatim_user_agent,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        raise RuntimeError(f"Nominatim returned HTTP {error.code}") from error
+    except (URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise RuntimeError(f"Nominatim request failed: {error}") from error
+
+
+def search_places(query: str, limit: int) -> dict[str, Any]:
+    term = query.strip()
+    if len(term) < 2:
+        return {"query": term, "results": []}
+
+    viewbox = (
+        f"{MONTREAL_BBOX['min_lon']},{MONTREAL_BBOX['max_lat']},"
+        f"{MONTREAL_BBOX['max_lon']},{MONTREAL_BBOX['min_lat']}"
+    )
+    payload = nominatim_get(
+        "/search",
+        {
+            "q": term,
+            "format": "json",
+            "addressdetails": "1",
+            "limit": str(limit),
+            "countrycodes": "ca",
+            "viewbox": viewbox,
+            "bounded": "1",
+        },
+    )
+    if not isinstance(payload, list):
+        raise RuntimeError("Nominatim search returned an unexpected payload.")
+
+    results = [format_place(item) for item in payload if "lat" in item and "lon" in item]
+    covered = [item for item in results if item["in_coverage"]]
+    ordered = covered + [item for item in results if not item["in_coverage"]]
+    return {"query": term, "results": ordered[:limit], "coverage": coverage_bounds()}
+
+
+def reverse_place(latitude: float, longitude: float) -> dict[str, Any]:
+    payload = nominatim_get(
+        "/reverse",
+        {
+            "lat": f"{latitude:.6f}",
+            "lon": f"{longitude:.6f}",
+            "format": "json",
+            "zoom": "17",
+            "addressdetails": "1",
+        },
+    )
+    if not isinstance(payload, dict) or "lat" not in payload or "lon" not in payload:
+        return {
+            "id": f"{latitude:.5f},{longitude:.5f}",
+            "name": "Dropped pin",
+            "detail": "Selected on map",
+            "coordinate": [longitude, latitude],
+            "in_coverage": point_in_coverage(latitude, longitude),
+        }
+    return format_place(payload)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": "detour-api"}
@@ -339,6 +475,54 @@ def bixi_routes(
         content=payload,
         headers={
             "Cache-Control": f"private, max-age={settings.route_cache_ttl_seconds}",
+            "X-Detour-Cache": "HIT" if cache_hit else "MISS",
+        },
+    )
+
+
+@app.get("/v1/places/search")
+def places_search(
+    q: str = Query(min_length=1, max_length=120),
+    limit: int = Query(default=8, ge=1, le=12),
+) -> JSONResponse:
+    cache_key = ("places_search", q.strip().lower(), limit)
+    try:
+        payload, cache_hit = places_cache.get_or_set(
+            cache_key,
+            settings.places_cache_ttl_seconds,
+            lambda: search_places(q, limit),
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=f"Place search is temporarily unavailable: {error}") from error
+
+    return JSONResponse(
+        content=payload,
+        headers={
+            "Cache-Control": f"private, max-age={settings.places_cache_ttl_seconds}",
+            "X-Detour-Cache": "HIT" if cache_hit else "MISS",
+        },
+    )
+
+
+@app.get("/v1/places/reverse")
+def places_reverse(
+    lat: float = Query(ge=-90, le=90),
+    lon: float = Query(ge=-180, le=180),
+) -> JSONResponse:
+    cache_key = ("places_reverse", round(lat, 5), round(lon, 5))
+    try:
+        payload, cache_hit = places_cache.get_or_set(
+            cache_key,
+            settings.places_cache_ttl_seconds,
+            lambda: reverse_place(lat, lon),
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=f"Reverse geocoding is temporarily unavailable: {error}") from error
+
+    return JSONResponse(
+        content=payload,
+        headers={
+            "Cache-Control": f"private, max-age={settings.places_cache_ttl_seconds}",
             "X-Detour-Cache": "HIT" if cache_hit else "MISS",
         },
     )

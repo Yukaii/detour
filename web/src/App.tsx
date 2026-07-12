@@ -22,19 +22,31 @@ import {
 import { fetchRoutes, reverseGeocode, searchPlaces } from "./api";
 import type { BikePreference, Coordinate, PlaceResult, RouteLeg, RouteOption, RouteResponse, RouteStep } from "./types";
 
-const MAP_CENTER: Coordinate = [-73.595, 45.521];
+const MAP_CENTER: Coordinate = [-73.604, 45.522];
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
 const DESKTOP_BREAKPOINT = 800;
 const SIDEBAR_WIDTH = 390;
 
+// Matches data/graphs/manifest.json prepared pilot coverage.
+const COVERAGE = { south: 45.4871, west: -73.6512, north: 45.5571, east: -73.5568 };
+
 const SUGGESTED_PLACES: PlaceResult[] = [
-  { id: "jean-talon", name: "Jean-Talon Market", detail: "Little Italy", coordinate: [-73.6148, 45.5361] },
-  { id: "mile-end", name: "Mile End", detail: "St-Viateur / Clark", coordinate: [-73.6012, 45.5232] },
-  { id: "jarry", name: "Parc Jarry", detail: "Saint-Laurent entrance", coordinate: [-73.625, 45.5325] },
-  { id: "pda", name: "Place des Arts", detail: "Quartier des spectacles", coordinate: [-73.58781, 45.50884] },
-  { id: "old-port", name: "Old Port", detail: "Vieux-Montréal", coordinate: [-73.5536, 45.5088] },
-  { id: "mt-royal", name: "Mount Royal Lookout", detail: "Kondiaronk Belvedere", coordinate: [-73.587, 45.4986] }
+  { id: "jean-talon", name: "Jean-Talon Market", detail: "Little Italy", coordinate: [-73.6148, 45.5361], in_coverage: true },
+  { id: "mile-end", name: "Mile End", detail: "St-Viateur / Clark", coordinate: [-73.6012, 45.5232], in_coverage: true },
+  { id: "jarry", name: "Parc Jarry", detail: "Saint-Laurent entrance", coordinate: [-73.625, 45.5325], in_coverage: true },
+  { id: "outremont", name: "Outremont", detail: "Laurier / Bloomfield", coordinate: [-73.6095, 45.5185], in_coverage: true },
+  { id: "plateau", name: "Plateau Mont-Royal", detail: "Mont-Royal / St-Denis", coordinate: [-73.5825, 45.5245], in_coverage: true },
+  { id: "mcgill", name: "McGill University", detail: "Downtown campus", coordinate: [-73.5772, 45.5048], in_coverage: true }
 ];
+
+function inCoverage(place: Pick<PlaceResult, "coordinate" | "in_coverage"> | Coordinate): boolean {
+  if (Array.isArray(place)) {
+    const [lon, lat] = place;
+    return lat >= COVERAGE.south && lat <= COVERAGE.north && lon >= COVERAGE.west && lon <= COVERAGE.east;
+  }
+  if (typeof place.in_coverage === "boolean") return place.in_coverage;
+  return inCoverage(place.coordinate);
+}
 
 function pointFeature(coordinate: Coordinate, kind: string): FeatureCollection {
   return { type: "FeatureCollection", features: [{ type: "Feature", properties: { kind }, geometry: { type: "Point", coordinates: coordinate } }] };
@@ -213,6 +225,11 @@ function App() {
 
   const requestRoutes = useCallback(async (nextOrigin: Coordinate | null = origin, nextDestination: Coordinate | null = destination) => {
     if (!nextOrigin || !nextDestination) return;
+    if (!inCoverage(nextOrigin) || !inCoverage(nextDestination)) {
+      setRoutes(null);
+      setError("That point is outside central Montréal coverage. Try Mile End, Plateau, or Jean-Talon.");
+      return;
+    }
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
@@ -224,7 +241,14 @@ function App() {
       setRoutes(response);
       setSelectedIndex(0);
     } catch (requestError) {
-      if ((requestError as Error).name !== "AbortError") setError((requestError as Error).message);
+      if ((requestError as Error).name !== "AbortError") {
+        const message = (requestError as Error).message;
+        setError(
+          message.includes("prepared routing coverage")
+            ? "That point is outside central Montréal coverage. Try Mile End, Plateau, or Jean-Talon."
+            : message
+        );
+      }
     } finally {
       if (requestRef.current === controller) setLoading(false);
     }
@@ -256,7 +280,13 @@ function App() {
       setDestinationName("Locating…");
       setSearchQuery("");
       setMapPickMode(false);
-      void reverseGeocode(nextDestination).then((name) => setDestinationName(name));
+      void reverseGeocode(nextDestination).then((place) => {
+        setDestinationName(place.name);
+        if (!inCoverage(place)) {
+          setRoutes(null);
+          setError("That point is outside central Montréal coverage. Try Mile End, Plateau, or Jean-Talon.");
+        }
+      });
       if (origin) void requestRoutes(origin, nextDestination);
     };
     map.on("click", handleClick);
@@ -335,6 +365,11 @@ function App() {
     setDestinationFocused(false);
     setSearchResults([]);
     mapRef.current?.flyTo({ center: place.coordinate, zoom: 14 });
+    if (!inCoverage(place)) {
+      setRoutes(null);
+      setError("That place is outside central Montréal coverage. Try Mile End, Plateau, or Jean-Talon.");
+      return;
+    }
     if (origin) void requestRoutes(origin, place.coordinate);
     else setError("Set your start location to find BIXI routes.");
   };
@@ -396,15 +431,18 @@ function App() {
                     <div className="place-results-status"><Loader2 className="spin" size={15} />Searching…</div>
                   )}
                   {!searching && searchQuery.trim().length >= 2 && displayResults.length === 0 && (
-                    <div className="place-results-status">No places found — try a street or neighbourhood</div>
+                    <div className="place-results-status">No places found in central Montréal — try Mile End or Plateau</div>
                   )}
-                  {displayResults.map((place) => (
-                    <button type="button" key={place.id} onMouseDown={(event) => event.preventDefault()} onClick={() => selectPlace(place)}>
-                      <MapPin size={16} /><span><strong>{place.name}</strong><small>{place.detail}</small></span>
-                    </button>
-                  ))}
+                  {displayResults.map((place) => {
+                    const covered = inCoverage(place);
+                    return (
+                      <button type="button" key={place.id} className={covered ? undefined : "out-of-coverage"} onMouseDown={(event) => event.preventDefault()} onClick={() => selectPlace(place)}>
+                        <MapPin size={16} /><span><strong>{place.name}</strong><small>{covered ? place.detail : "Outside current coverage"}</small></span>
+                      </button>
+                    );
+                  })}
                   <button type="button" className="place-map-pick" onMouseDown={(event) => event.preventDefault()} onClick={() => { setDestinationFocused(false); setMapPickMode(true); }}>
-                    <MapPin size={16} /><span><strong>Pick on map</strong><small>Drop a pin anywhere in coverage</small></span>
+                    <MapPin size={16} /><span><strong>Pick on map</strong><small>Central Montréal pilot area</small></span>
                   </button>
                 </div>
               )}

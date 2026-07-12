@@ -6,6 +6,7 @@ export interface PlaceResult {
   name: string;
   detail: string;
   coordinate: Coordinate;
+  in_coverage?: boolean;
 }
 
 export interface RouteStep {
