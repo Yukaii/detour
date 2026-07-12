@@ -64,6 +64,20 @@ Then open [http://localhost:8000/preview/](http://localhost:8000/preview/). The 
 
 You can still open the GeoJSON in geojson.io, QGIS, or another map viewer to inspect raw data.
 
+## PWA frontend
+
+The mobile-first React PWA lives in `web/` and uses the hosted API by default.
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The app supports live BIXI route options, bike preference, current location, preset or map-picked destinations, station availability, route comparison, and turn details. Create a production bundle with `npm run build`; the output is written to `web/dist/` with its PWA manifest and service worker.
+
+Set `VITE_DETOUR_API_URL` at build time to use another backend origin. That frontend origin must also be included in the backend's `DETOUR_CORS_ORIGINS` setting.
+
 ## HTTP API
 
 Run the API locally:

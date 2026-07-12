@@ -7,4 +7,6 @@ data
 routes
 preview
 tests
+web/node_modules
+web/dist
 .DS_Store
