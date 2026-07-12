@@ -1,6 +1,13 @@
 export type Coordinate = [number, number];
 export type BikePreference = "any" | "ebike" | "regular";
 
+export interface PlaceResult {
+  id: string;
+  name: string;
+  detail: string;
+  coordinate: Coordinate;
+}
+
 export interface RouteStep {
   instruction: string;
   maneuver: string;
