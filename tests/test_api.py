@@ -99,30 +99,37 @@ def test_readiness_fails_without_graph_artifacts(monkeypatch) -> None:
     assert json.loads(response.body)["detail"] == "missing graphs"
 
 
-def test_places_search_uses_nominatim_and_marks_coverage(monkeypatch) -> None:
+def test_places_search_uses_photon_and_marks_coverage(monkeypatch) -> None:
     monkeypatch.setattr(detour_api, "places_cache", TtlCache())
     monkeypatch.setattr(detour_api, "graph_artifact_paths", pilot_graph_artifacts)
     monkeypatch.setattr(
         detour_api,
-        "nominatim_get",
-        lambda path, params: [
-            {
-                "place_id": 1,
-                "lat": "45.5232",
-                "lon": "-73.6012",
-                "name": "Mile End",
-                "display_name": "Mile End, Montréal, Québec, Canada",
-                "address": {"neighbourhood": "Mile End"},
-            },
-            {
-                "place_id": 2,
-                "lat": "45.5088",
-                "lon": "-73.5400",
-                "name": "Old Port",
-                "display_name": "Old Port, Montréal, Québec, Canada",
-                "address": {"suburb": "Vieux-Montréal"},
-            },
-        ],
+        "photon_get",
+        lambda path, params: {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-73.6012, 45.5232]},
+                    "properties": {
+                        "osm_type": "N",
+                        "osm_id": 1,
+                        "name": "Mile End",
+                        "district": "Le Plateau-Mont-Royal",
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-73.5400, 45.5088]},
+                    "properties": {
+                        "osm_type": "N",
+                        "osm_id": 2,
+                        "name": "Old Port",
+                        "district": "Vieux-Montréal",
+                    },
+                },
+            ],
+        },
     )
 
     response = places_search(q="mile", limit=8)
@@ -140,12 +147,21 @@ def test_places_search_caches_results(monkeypatch) -> None:
     monkeypatch.setattr(detour_api, "graph_artifact_paths", fake_graph_artifacts)
     calls = 0
 
-    def fake_nominatim(path, params):
+    def fake_photon(path, params):
         nonlocal calls
         calls += 1
-        return [{"place_id": 9, "lat": "45.52", "lon": "-73.60", "name": "Test", "display_name": "Test, Montréal"}]
+        return {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-73.60, 45.52]},
+                    "properties": {"osm_type": "N", "osm_id": 9, "name": "Test", "city": "Montreal"},
+                }
+            ],
+        }
 
-    monkeypatch.setattr(detour_api, "nominatim_get", fake_nominatim)
+    monkeypatch.setattr(detour_api, "photon_get", fake_photon)
 
     first = places_search(q="test", limit=5)
     second = places_search(q="test", limit=5)
@@ -160,14 +176,21 @@ def test_places_reverse_formats_place(monkeypatch) -> None:
     monkeypatch.setattr(detour_api, "graph_artifact_paths", pilot_graph_artifacts)
     monkeypatch.setattr(
         detour_api,
-        "nominatim_get",
+        "photon_get",
         lambda path, params: {
-            "place_id": 3,
-            "lat": "45.5361",
-            "lon": "-73.6148",
-            "name": "Jean-Talon Market",
-            "display_name": "Jean-Talon Market, Montréal, Québec, Canada",
-            "address": {"neighbourhood": "Little Italy"},
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [-73.6148, 45.5361]},
+                    "properties": {
+                        "osm_type": "W",
+                        "osm_id": 3,
+                        "name": "Jean-Talon Market",
+                        "district": "Little Italy",
+                    },
+                }
+            ],
         },
     )
 

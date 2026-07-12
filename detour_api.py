@@ -57,8 +57,7 @@ class Settings:
     rate_limit_per_minute: int
     max_route_distance_km: int
     graph_manifest_path: Path
-    nominatim_url: str
-    nominatim_user_agent: str
+    photon_url: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -74,11 +73,7 @@ class Settings:
             rate_limit_per_minute=env_int("DETOUR_RATE_LIMIT_PER_MINUTE", 30),
             max_route_distance_km=env_int("DETOUR_MAX_ROUTE_DISTANCE_KM", 35),
             graph_manifest_path=Path(os.getenv("DETOUR_GRAPH_MANIFEST_PATH", "data/graphs/manifest.json")),
-            nominatim_url=os.getenv("DETOUR_NOMINATIM_URL", "https://nominatim.openstreetmap.org").rstrip("/"),
-            nominatim_user_agent=os.getenv(
-                "DETOUR_NOMINATIM_USER_AGENT",
-                "DetourMontreal/0.3 (https://github.com/anomalyco/detour; contact@detour.local)",
-            ),
+            photon_url=os.getenv("DETOUR_PHOTON_URL", "https://photon.komoot.io").rstrip("/"),
         )
 
 
@@ -330,25 +325,28 @@ def point_in_coverage(latitude: float, longitude: float) -> bool:
     )
 
 
-def format_place(item: dict[str, Any]) -> dict[str, Any]:
-    address = item.get("address") or {}
-    display_name = str(item.get("display_name") or "")
-    parts = [part.strip() for part in display_name.split(",") if part.strip()]
-    name = str(item.get("name") or (parts[0] if parts else "Selected place"))
+def format_photon_place(feature: dict[str, Any]) -> dict[str, Any] | None:
+    geometry = feature.get("geometry") or {}
+    coordinates = geometry.get("coordinates")
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        return None
+    longitude = float(coordinates[0])
+    latitude = float(coordinates[1])
+    props = feature.get("properties") or {}
+    street_line = " ".join(part for part in (props.get("housenumber"), props.get("street")) if part)
+    name = str(props.get("name") or street_line or props.get("locality") or props.get("city") or "Selected place")
     detail = (
-        address.get("neighbourhood")
-        or address.get("suburb")
-        or address.get("borough")
-        or address.get("quarter")
-        or address.get("city_district")
-        or address.get("road")
-        or ", ".join(parts[1:3])
+        props.get("district")
+        or props.get("locality")
+        or props.get("city")
+        or props.get("street")
+        or props.get("state")
         or "Montréal"
     )
-    latitude = float(item["lat"])
-    longitude = float(item["lon"])
+    osm_type = props.get("osm_type") or "n"
+    osm_id = props.get("osm_id") or f"{latitude:.5f},{longitude:.5f}"
     return {
-        "id": str(item.get("place_id") or f"{latitude:.5f},{longitude:.5f}"),
+        "id": f"{osm_type}-{osm_id}",
         "name": name,
         "detail": detail,
         "coordinate": [longitude, latitude],
@@ -356,23 +354,19 @@ def format_place(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def nominatim_get(path: str, params: dict[str, str]) -> Any:
+def photon_get(path: str, params: dict[str, str]) -> Any:
     query = urllib.parse.urlencode(params)
     request = urllib.request.Request(
-        f"{settings.nominatim_url}{path}?{query}",
-        headers={
-            "Accept": "application/json",
-            "Accept-Language": "en",
-            "User-Agent": settings.nominatim_user_agent,
-        },
+        f"{settings.photon_url}{path}?{query}",
+        headers={"Accept": "application/json"},
     )
     try:
         with urllib.request.urlopen(request, timeout=8) as response:
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as error:
-        raise RuntimeError(f"Nominatim returned HTTP {error.code}") from error
+        raise RuntimeError(f"Photon returned HTTP {error.code}") from error
     except (URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise RuntimeError(f"Nominatim request failed: {error}") from error
+        raise RuntimeError(f"Photon request failed: {error}") from error
 
 
 def search_places(query: str, limit: int) -> dict[str, Any]:
@@ -380,51 +374,62 @@ def search_places(query: str, limit: int) -> dict[str, Any]:
     if len(term) < 2:
         return {"query": term, "results": []}
 
-    viewbox = (
-        f"{MONTREAL_BBOX['min_lon']},{MONTREAL_BBOX['max_lat']},"
-        f"{MONTREAL_BBOX['max_lon']},{MONTREAL_BBOX['min_lat']}"
-    )
-    payload = nominatim_get(
-        "/search",
+    # Bias toward central Montréal; Photon also tolerates typos better than Nominatim.
+    payload = photon_get(
+        "/api/",
         {
             "q": term,
-            "format": "json",
-            "addressdetails": "1",
-            "limit": str(limit),
-            "countrycodes": "ca",
-            "viewbox": viewbox,
-            "bounded": "1",
+            "limit": str(max(limit, 12)),
+            "lang": "en",
+            "lat": "45.521",
+            "lon": "-73.595",
+            "bbox": (
+                f"{MONTREAL_BBOX['min_lon']},{MONTREAL_BBOX['min_lat']},"
+                f"{MONTREAL_BBOX['max_lon']},{MONTREAL_BBOX['max_lat']}"
+            ),
         },
     )
-    if not isinstance(payload, list):
-        raise RuntimeError("Nominatim search returned an unexpected payload.")
+    features = payload.get("features") if isinstance(payload, dict) else None
+    if not isinstance(features, list):
+        raise RuntimeError("Photon search returned an unexpected payload.")
 
-    results = [format_place(item) for item in payload if "lat" in item and "lon" in item]
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for feature in features:
+        if not isinstance(feature, dict):
+            continue
+        place = format_photon_place(feature)
+        if place is None or place["id"] in seen:
+            continue
+        seen.add(place["id"])
+        results.append(place)
+
     covered = [item for item in results if item["in_coverage"]]
     ordered = covered + [item for item in results if not item["in_coverage"]]
     return {"query": term, "results": ordered[:limit], "coverage": coverage_bounds()}
 
 
 def reverse_place(latitude: float, longitude: float) -> dict[str, Any]:
-    payload = nominatim_get(
+    payload = photon_get(
         "/reverse",
         {
             "lat": f"{latitude:.6f}",
             "lon": f"{longitude:.6f}",
-            "format": "json",
-            "zoom": "17",
-            "addressdetails": "1",
+            "lang": "en",
         },
     )
-    if not isinstance(payload, dict) or "lat" not in payload or "lon" not in payload:
-        return {
-            "id": f"{latitude:.5f},{longitude:.5f}",
-            "name": "Dropped pin",
-            "detail": "Selected on map",
-            "coordinate": [longitude, latitude],
-            "in_coverage": point_in_coverage(latitude, longitude),
-        }
-    return format_place(payload)
+    features = payload.get("features") if isinstance(payload, dict) else None
+    if isinstance(features, list) and features:
+        place = format_photon_place(features[0]) if isinstance(features[0], dict) else None
+        if place is not None:
+            return place
+    return {
+        "id": f"{latitude:.5f},{longitude:.5f}",
+        "name": "Dropped pin",
+        "detail": "Selected on map",
+        "coordinate": [longitude, latitude],
+        "in_coverage": point_in_coverage(latitude, longitude),
+    }
 
 
 @app.get("/health")

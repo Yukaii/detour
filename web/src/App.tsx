@@ -32,10 +32,10 @@ const COVERAGE = { south: 45.4871, west: -73.6512, north: 45.5571, east: -73.556
 
 const SUGGESTED_PLACES: PlaceResult[] = [
   { id: "jean-talon", name: "Jean-Talon Market", detail: "Little Italy", coordinate: [-73.6148, 45.5361], in_coverage: true },
+  { id: "la-fontaine", name: "Parc La Fontaine", detail: "Le Plateau-Mont-Royal", coordinate: [-73.56897, 45.52626], in_coverage: true },
   { id: "mile-end", name: "Mile End", detail: "St-Viateur / Clark", coordinate: [-73.6012, 45.5232], in_coverage: true },
   { id: "jarry", name: "Parc Jarry", detail: "Saint-Laurent entrance", coordinate: [-73.625, 45.5325], in_coverage: true },
   { id: "outremont", name: "Outremont", detail: "Laurier / Bloomfield", coordinate: [-73.6095, 45.5185], in_coverage: true },
-  { id: "plateau", name: "Plateau Mont-Royal", detail: "Mont-Royal / St-Denis", coordinate: [-73.5825, 45.5245], in_coverage: true },
   { id: "mcgill", name: "McGill University", detail: "Downtown campus", coordinate: [-73.5772, 45.5048], in_coverage: true }
 ];
 
