@@ -13,6 +13,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
+from pathlib import Path
 from threading import Lock
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -30,7 +31,7 @@ from detour_router import (
     MONTREAL_BBOX,
     bixi_option_payload,
     bixi_route_options,
-    load_graph,
+    load_prepared_graph,
     parse_lat_lon,
 )
 
@@ -51,6 +52,7 @@ class Settings:
     route_cache_ttl_seconds: int
     rate_limit_per_minute: int
     max_route_distance_km: int
+    graph_manifest_path: Path
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -64,6 +66,7 @@ class Settings:
             route_cache_ttl_seconds=env_int("DETOUR_ROUTE_CACHE_TTL_SECONDS", 60),
             rate_limit_per_minute=env_int("DETOUR_RATE_LIMIT_PER_MINUTE", 30),
             max_route_distance_km=env_int("DETOUR_MAX_ROUTE_DISTANCE_KM", 35),
+            graph_manifest_path=Path(os.getenv("DETOUR_GRAPH_MANIFEST_PATH", "data/graphs/manifest.json")),
         )
 
 
@@ -140,7 +143,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 
 settings = Settings.from_env()
 route_cache = TtlCache()
-app = FastAPI(title="Detour API", version="0.2.0")
+app = FastAPI(title="Detour API", version="0.3.0")
 app.add_middleware(RateLimitMiddleware, requests_per_minute=settings.rate_limit_per_minute)
 app.add_middleware(RequestLogMiddleware)
 app.add_middleware(
@@ -172,10 +175,38 @@ def router_args(
     )
 
 
-@lru_cache(maxsize=16)
-def graphs_for_route(origin: tuple[float, float], destination: tuple[float, float]):
-    args = router_args(origin, destination, "any", 15)
-    return load_graph(args, "bike"), load_graph(args, "walk")
+def load_graph_manifest(path: Path) -> dict[str, Any]:
+    if not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f"Prepared graph manifest is missing or empty: {path}")
+    try:
+        manifest = json.loads(path.read_text())
+        bounds = manifest["bounds"]
+        files = manifest["files"]
+        for key in ("south", "west", "north", "east"):
+            float(bounds[key])
+        for key in ("bike", "walk"):
+            if not files[key]:
+                raise ValueError(f"Missing {key} graph filename")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Prepared graph manifest is invalid: {path}: {error}") from error
+    return manifest
+
+
+def graph_artifact_paths() -> tuple[dict[str, Any], Path, Path]:
+    manifest = load_graph_manifest(settings.graph_manifest_path)
+    directory = settings.graph_manifest_path.parent
+    bike_path = directory / manifest["files"]["bike"]
+    walk_path = directory / manifest["files"]["walk"]
+    for network_type, path in (("bike", bike_path), ("walk", walk_path)):
+        if not path.is_file() or path.stat().st_size == 0:
+            raise RuntimeError(f"Prepared {network_type} graph is missing or empty: {path}")
+    return manifest, bike_path, walk_path
+
+
+@lru_cache(maxsize=1)
+def prepared_graphs():
+    _, bike_path, walk_path = graph_artifact_paths()
+    return load_prepared_graph(bike_path, "bike"), load_prepared_graph(walk_path, "walk")
 
 
 def parse_point(value: str, field_name: str) -> tuple[float, float]:
@@ -208,6 +239,18 @@ def validate_route_request(origin: tuple[float, float], destination: tuple[float
             detail=f"Route exceeds the {settings.max_route_distance_km} km maximum straight-line distance.",
         )
 
+    try:
+        manifest, _, _ = graph_artifact_paths()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    bounds = manifest["bounds"]
+    for field_name, (latitude, longitude) in (("origin", origin), ("destination", destination)):
+        if not (
+            float(bounds["south"]) <= latitude <= float(bounds["north"])
+            and float(bounds["west"]) <= longitude <= float(bounds["east"])
+        ):
+            raise HTTPException(status_code=422, detail=f"{field_name} is outside the prepared routing coverage.")
+
 
 def bixi_response(
     origin: tuple[float, float],
@@ -217,7 +260,7 @@ def bixi_response(
     options: int,
 ) -> dict[str, Any]:
     args = router_args(origin, destination, bike_preference, max_walk_minutes)
-    bike_graph, walk_graph = graphs_for_route(origin, destination)
+    bike_graph, walk_graph = prepared_graphs()
     results = bixi_route_options(args, bike_graph, walk_graph, option_limit=options)
     return {
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -236,8 +279,20 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-def ready() -> dict[str, str]:
-    return {"status": "ready", "service": "detour-api"}
+def ready() -> JSONResponse:
+    try:
+        manifest, _, _ = graph_artifact_paths()
+        prepared_graphs()
+    except RuntimeError as error:
+        return JSONResponse(status_code=503, content={"status": "not_ready", "service": "detour-api", "detail": str(error)})
+    return JSONResponse(
+        content={
+            "status": "ready",
+            "service": "detour-api",
+            "graph_version": manifest.get("version", "unknown"),
+            "generated_at": manifest.get("generated_at"),
+        }
+    )
 
 
 @app.get("/v1/routes/bixi")

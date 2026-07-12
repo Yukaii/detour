@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import urllib.request
 from collections import Counter
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import networkx as nx
+import numpy as np
 import osmnx as ox
 
 
@@ -201,7 +203,7 @@ def load_graph(args: argparse.Namespace, network_type: str = "bike") -> nx.Multi
         cache_path = Path(args.graph_cache)
     else:
         cache_path = default_cache_path(args, network_type)
-    if cache_path.exists():
+    if cache_path.exists() and cache_path.stat().st_size > 0:
         graph = ox.load_graphml(cache_path)
     elif args.place:
         graph = ox.graph_from_place(args.place, network_type=network_type, simplify=True, retain_all=False)
@@ -215,10 +217,36 @@ def load_graph(args: argparse.Namespace, network_type: str = "bike") -> nx.Multi
         for _, _, _, data in graph.edges(keys=True, data=True):
             data["shortest_cost"] = float(data.get("length", 1.0))
 
-    if not cache_path.exists():
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        ox.save_graphml(graph, cache_path)
+    if not cache_path.exists() or cache_path.stat().st_size == 0:
+        atomic_save_graphml(graph, cache_path)
 
+    return graph
+
+
+def atomic_save_graphml(graph: nx.MultiDiGraph, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_suffix(f"{path.suffix}.tmp")
+    temporary_path.unlink(missing_ok=True)
+    try:
+        ox.save_graphml(graph, temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def load_prepared_graph(path: Path, network_type: str) -> nx.MultiDiGraph:
+    if not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f"Prepared {network_type} graph is missing or empty: {path}")
+    configure_osmnx()
+    try:
+        graph = ox.load_graphml(path)
+    except Exception as error:
+        raise RuntimeError(f"Prepared {network_type} graph could not be loaded: {path}: {error}") from error
+    if network_type == "bike":
+        add_detour_weights(graph)
+    else:
+        for _, _, _, data in graph.edges(keys=True, data=True):
+            data["shortest_cost"] = float(data.get("length", 1.0))
     return graph
 
 
@@ -381,10 +409,25 @@ def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def nearest_node(graph: nx.MultiDiGraph, point: tuple[float, float]) -> int:
     lat, lon = point
-    return min(
-        graph.nodes,
-        key=lambda node: haversine_m(lat, lon, float(graph.nodes[node]["y"]), float(graph.nodes[node]["x"])),
-    )
+    if "_detour_node_ids" not in graph.graph:
+        node_ids = np.fromiter(graph.nodes, dtype=np.int64, count=graph.number_of_nodes())
+        graph.graph["_detour_node_ids"] = node_ids
+        graph.graph["_detour_node_lat_rad"] = np.radians(
+            np.fromiter((float(graph.nodes[node]["y"]) for node in node_ids), dtype=np.float64)
+        )
+        graph.graph["_detour_node_lon_rad"] = np.radians(
+            np.fromiter((float(graph.nodes[node]["x"]) for node in node_ids), dtype=np.float64)
+        )
+
+    node_ids = graph.graph["_detour_node_ids"]
+    node_lat = graph.graph["_detour_node_lat_rad"]
+    node_lon = graph.graph["_detour_node_lon_rad"]
+    lat_rad = math.radians(lat)
+    lon_rad = math.radians(lon)
+    delta_lat = node_lat - lat_rad
+    delta_lon = node_lon - lon_rad
+    haversine = np.sin(delta_lat / 2) ** 2 + math.cos(lat_rad) * np.cos(node_lat) * np.sin(delta_lon / 2) ** 2
+    return int(node_ids[int(np.argmin(haversine))])
 
 
 def fetch_json(url: str) -> dict[str, Any]:

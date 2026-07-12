@@ -97,6 +97,8 @@ See [OPERATIONS.md](/Users/yukai/Projects/Personal/detour/OPERATIONS.md) for con
 
 The public v1 API is intentionally limited to Montréal endpoints and trips of at most 35 km straight-line distance. This protects the graph downloader and persistent storage from arbitrary global requests.
 
+Production requests use a versioned, prebuilt bike/walking graph bundle and never build OSM graphs inline. The current hosted bundle is a central-Montréal pilot; requests outside its manifest coverage return `422`. Build or refresh a bundle with `prepare_graphs.py` as documented in [OPERATIONS.md](/Users/yukai/Projects/Personal/detour/OPERATIONS.md).
+
 In geojson.io, the combined comparison file includes:
 
 - red line: shortest route
@@ -137,7 +139,8 @@ Current limitations:
 - BIXI station selection evaluates only the locally best pickup and dropoff candidates (`--station-candidate-limit`, default `6`). A slightly farther station with a materially better bike route may be missed.
 - Comfort depends on OpenStreetMap tag coverage and does not yet model slope, construction, seasonal closures, traffic volume, road width, intersection stress, or rider-specific preferences.
 - BIXI availability is live when the CLI/API runs, but the generated GeoJSON is a snapshot. API responses provide generation and station timestamps when GBFS supplies them, but clients still need to refresh.
-- There are no automated routing tests or calibrated rider-feedback dataset yet. A `100/100` comfort score means the route best matches the current heuristic; it is not a validated safety or rider-satisfaction claim.
+- Automated tests cover core routing mechanics, but there is no calibrated rider-feedback dataset yet. A `100/100` comfort score means the route best matches the current heuristic; it is not a validated safety or rider-satisfaction claim.
+- The first public graph bundle covers central Montréal only. Full BIXI-network coverage requires a larger offline graph build and memory/latency validation before promotion.
 
 Recommended backend sequence:
 

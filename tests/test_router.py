@@ -1,6 +1,7 @@
 import networkx as nx
+import pytest
 
-from detour_router import graph_bbox_buffer_km, route_maneuvers, walking_station_candidates
+from detour_router import graph_bbox_buffer_km, load_prepared_graph, nearest_node, route_maneuvers, walking_station_candidates
 
 
 def walk_graph_with_detour() -> nx.MultiDiGraph:
@@ -58,3 +59,19 @@ def test_route_maneuvers_describe_right_turn() -> None:
     assert steps[1]["instruction"] == "Turn right onto Rue Est"
     assert steps[1]["edge_keys"] == [12]
     assert steps[-1]["maneuver"] == "arrive"
+
+
+def test_nearest_node_reuses_vectorized_index() -> None:
+    graph = walk_graph_with_detour()
+
+    assert nearest_node(graph, (45.0049, -73.0)) == 2
+    assert nearest_node(graph, (45.0099, -73.0)) == 3
+    assert "_detour_node_ids" in graph.graph
+
+
+def test_prepared_graph_rejects_corrupt_artifact(tmp_path) -> None:
+    path = tmp_path / "broken.graphml"
+    path.write_text("not graphml")
+
+    with pytest.raises(RuntimeError, match="could not be loaded"):
+        load_prepared_graph(path, "bike")
