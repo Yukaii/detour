@@ -21,12 +21,12 @@ The v1 API accepts endpoints only inside the hard-coded Montréal service bounds
 
 ## Fly.io deployment
 
-The included `fly.toml` runs one machine in Montréal (`yul`) and mounts a persistent volume at `/app/data`. The first route for uncached bounds may still be slow while OSM data is downloaded.
+The included `fly.toml` runs one always-on 2 GB machine in Fly.io's nearest available Canadian region, Toronto (`yyz`), and mounts a persistent volume at `/app/data`. The 2 GB memory floor is required for OSMnx pedestrian-graph construction. Scale-to-zero is disabled because it can interrupt long graph builds and discards the in-memory graph cache. The first route for uncached bounds may still be slow while OSM data is downloaded.
 
 ```bash
 fly auth login
 fly apps create <unique-app-name>
-fly volumes create detour_data --region yul --size 3 -a <unique-app-name>
+fly volumes create detour_data --region yyz --size 3 -a <unique-app-name>
 fly deploy -a <unique-app-name>
 fly checks list -a <unique-app-name>
 ```
