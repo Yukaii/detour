@@ -33,6 +33,7 @@ from detour_router import (
     DEFAULT_ORIGIN,
     MONTREAL_BBOX,
     bixi_option_payload,
+    bixi_route_plan,
     bixi_route_options,
     load_prepared_graph,
     parse_lat_lon,
@@ -184,6 +185,8 @@ def router_args(
     destination: tuple[float, float],
     bike_preference: str,
     max_walk_minutes: float,
+    pickup_station_id: str | None = None,
+    dropoff_station_id: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         origin=origin,
@@ -197,6 +200,8 @@ def router_args(
         place="",
         graph_cache="",
         mode="bixi",
+        pickup_station_id=pickup_station_id,
+        dropoff_station_id=dropoff_station_id,
     )
 
 
@@ -283,10 +288,25 @@ def bixi_response(
     bike_preference: str,
     max_walk_minutes: float,
     options: int,
+    pickup_station_id: str | None = None,
+    dropoff_station_id: str | None = None,
 ) -> dict[str, Any]:
-    args = router_args(origin, destination, bike_preference, max_walk_minutes)
+    args = router_args(origin, destination, bike_preference, max_walk_minutes, pickup_station_id, dropoff_station_id)
     bike_graph, walk_graph = prepared_graphs()
-    results = bixi_route_options(args, bike_graph, walk_graph, option_limit=options)
+    results, pickups, dropoffs = bixi_route_plan(args, bike_graph, walk_graph, option_limit=options)
+    def station_payload(station: dict[str, Any], kind: str) -> dict[str, Any]:
+        return {
+            "station_id": station["station_id"],
+            "name": station["name"],
+            "coordinates": [station["point"][1], station["point"][0]],
+            "walk_distance_m": station["walk_distance_m"],
+            "available_bikes": int(station.get("num_bikes_available", 0)),
+            "available_regular_bikes": int(station.get("available_regular_bikes", 0)),
+            "available_ebikes": int(station.get("num_ebikes_available", 0)),
+            "available_docks": int(station.get("num_docks_available", 0)),
+            "availability_updated_at": datetime.fromtimestamp(float(station["last_reported"]), tz=UTC).isoformat().replace("+00:00", "Z") if station.get("last_reported") else None,
+            "kind": kind,
+        }
     return {
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "mode": "bixi",
@@ -295,6 +315,8 @@ def bixi_response(
         "bike_preference": bike_preference,
         "max_walk_minutes": max_walk_minutes,
         "options": [bixi_option_payload(result, bike_graph, walk_graph) for result in results],
+        "nearby_stations": [station_payload(station, "pickup") for station in pickups]
+        + [station_payload(station, "dropoff") for station in dropoffs],
     }
 
 
@@ -461,17 +483,19 @@ def bixi_routes(
     bike_preference: str = Query(default="any", pattern="^(any|ebike|regular)$"),
     max_walk_minutes: float = Query(default=15, gt=0, le=30),
     options: int = Query(default=3, ge=1, le=5),
+    pickup_station_id: str | None = Query(default=None, max_length=80),
+    dropoff_station_id: str | None = Query(default=None, max_length=80),
 ) -> JSONResponse:
     parsed_origin = parse_point(origin, "origin")
     parsed_destination = parse_point(destination, "destination")
     validate_route_request(parsed_origin, parsed_destination)
-    cache_key = (parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options)
+    cache_key = (parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options, pickup_station_id, dropoff_station_id)
 
     try:
         payload, cache_hit = route_cache.get_or_set(
             cache_key,
             settings.route_cache_ttl_seconds,
-            lambda: bixi_response(parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options),
+            lambda: bixi_response(parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options, pickup_station_id, dropoff_station_id),
         )
     except (RuntimeError, TimeoutError, URLError) as error:
         raise HTTPException(status_code=503, detail=f"Routing data is temporarily unavailable: {error}") from error

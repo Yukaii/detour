@@ -824,12 +824,12 @@ def run_own_bike(args: argparse.Namespace, graph: nx.MultiDiGraph) -> None:
     print(f"Wrote GeoJSON to {output_dir.resolve()}")
 
 
-def bixi_route_options(
+def bixi_route_plan(
     args: argparse.Namespace,
     bike_graph: nx.MultiDiGraph,
     walk_graph: nx.MultiDiGraph,
     option_limit: int = 3,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     stations = load_bixi_stations(args.bixi_gbfs_url, args.gbfs_language)
     max_walk_m = args.max_walk_minutes * WALKING_SPEED_M_PER_MIN
     pickups = walking_station_candidates(
@@ -838,6 +838,15 @@ def bixi_route_options(
     dropoffs = walking_station_candidates(
         walk_graph, stations, args.destination, max_walk_m, "dropoff", args.bike_preference, args.station_candidate_limit
     )
+
+    pickup_station_id = getattr(args, "pickup_station_id", None)
+    dropoff_station_id = getattr(args, "dropoff_station_id", None)
+    all_pickups = pickups
+    all_dropoffs = dropoffs
+    if pickup_station_id:
+        pickups = [station for station in pickups if station["station_id"] == pickup_station_id]
+    if dropoff_station_id:
+        dropoffs = [station for station in dropoffs if station["station_id"] == dropoff_station_id]
 
     if not pickups:
         nearby = nearest_station_snapshot(stations, args.origin, "pickup", args.bike_preference)
@@ -875,7 +884,17 @@ def bixi_route_options(
 
     if not options:
         raise RuntimeError("Could not route between any BIXI pickup/dropoff candidate pair.")
-    return sorted(options, key=lambda option: option["total_score"])[:option_limit]
+    return sorted(options, key=lambda option: option["total_score"])[:option_limit], all_pickups, all_dropoffs
+
+
+def bixi_route_options(
+    args: argparse.Namespace,
+    bike_graph: nx.MultiDiGraph,
+    walk_graph: nx.MultiDiGraph,
+    option_limit: int = 3,
+) -> list[dict[str, Any]]:
+    options, _, _ = bixi_route_plan(args, bike_graph, walk_graph, option_limit)
+    return options
 
 
 def best_bixi_route(args: argparse.Namespace, bike_graph: nx.MultiDiGraph, walk_graph: nx.MultiDiGraph) -> dict[str, Any]:

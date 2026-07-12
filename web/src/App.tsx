@@ -17,10 +17,11 @@ import {
   Route,
   Search,
   Undo2,
+  Zap,
   X
 } from "lucide-react";
 import { fetchRoutes, reverseGeocode, searchPlaces } from "./api";
-import type { BikePreference, Coordinate, PlaceResult, RouteLeg, RouteOption, RouteResponse, RouteStep } from "./types";
+import type { BikePreference, Coordinate, NearbyStation, PlaceResult, RouteLeg, RouteOption, RouteResponse, RouteStep } from "./types";
 
 const MAP_CENTER: Coordinate = [-73.604, 45.522];
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -56,6 +57,44 @@ function lineFeature(coordinates: Coordinate[]): FeatureCollection {
   return { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates } }] };
 }
 
+function stationFeatures(routes: RouteResponse | null, selectedIndex: number, preference: BikePreference): FeatureCollection {
+  if (!routes) return { type: "FeatureCollection", features: [] };
+  const seen = new Set<string>();
+  const selected = routes.options[selectedIndex];
+  const legacyCandidates: NearbyStation[] = routes.options.flatMap((option) => [
+    { ...option.pickup, available_docks: 0, kind: "pickup" as const },
+    {
+      ...option.dropoff,
+      available_bikes: 0,
+      available_regular_bikes: 0,
+      available_ebikes: 0,
+      kind: "dropoff" as const
+    }
+  ]);
+  const candidates = routes.nearby_stations?.length ? routes.nearby_stations : legacyCandidates;
+  return {
+    type: "FeatureCollection",
+    features: candidates.flatMap((station) => {
+      const key = `${station.kind}-${station.station_id}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      const isSelected = station.kind === "pickup" ? selected?.pickup.station_id === station.station_id : selected?.dropoff.station_id === station.station_id;
+      return [{
+        type: "Feature" as const,
+        properties: {
+          kind: station.kind,
+          stationId: station.station_id,
+          selected: isSelected ? 1 : 0,
+          count: station.kind === "dropoff" ? station.available_docks : preference === "ebike" ? station.available_ebikes : preference === "regular" ? station.available_regular_bikes : station.available_bikes,
+          bikeCode: station.kind === "dropoff" ? "P" : preference === "ebike" ? "E" : preference === "regular" ? "R" : "",
+          name: station.name
+        },
+        geometry: { type: "Point" as const, coordinates: station.coordinates }
+      }];
+    })
+  };
+}
+
 function formatDistance(meters: number): string {
   return meters >= 1000 ? `${(meters / 1000).toFixed(1)} km` : `${Math.round(meters)} m`;
 }
@@ -86,6 +125,7 @@ function addRouteLayers(map: MapLibreMap): void {
   map.addSource("bike-route", { type: "geojson", data: lineFeature([]) });
   map.addSource("walk-dropoff", { type: "geojson", data: lineFeature([]) });
   map.addSource("route-points", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addSource("candidate-stations", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addSource("user-location", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
     id: "walk-pickup",
@@ -141,6 +181,31 @@ function addRouteLayers(map: MapLibreMap): void {
     }
   });
   map.addLayer({
+    id: "candidate-station-halo",
+    type: "circle",
+    source: "candidate-stations",
+    paint: {
+      "circle-radius": ["case", ["==", ["get", "selected"], 1], 20, 17],
+      "circle-color": "#ffffff",
+      "circle-stroke-color": ["match", ["get", "kind"], "pickup", "#165df5", "#08a66c"],
+      "circle-stroke-width": ["case", ["==", ["get", "selected"], 1], 4, 2],
+      "circle-opacity": 0.96
+    }
+  });
+  map.addLayer({
+    id: "candidate-station-count",
+    type: "symbol",
+    source: "candidate-stations",
+    layout: {
+      "text-field": ["concat", ["get", "bikeCode"], ["to-string", ["get", "count"]]],
+      "text-size": 11,
+      "text-font": ["Open Sans Bold"],
+      "text-allow-overlap": true,
+      "text-ignore-placement": true
+    },
+    paint: { "text-color": ["match", ["get", "kind"], "pickup", "#165df5", "#087c55"] }
+  });
+  map.addLayer({
     id: "route-points-rings",
     type: "circle",
     source: "route-points",
@@ -158,6 +223,7 @@ function clearMapRoute(map: MapLibreMap): void {
   (map.getSource("bike-route") as GeoJSONSource)?.setData(lineFeature([]));
   (map.getSource("walk-dropoff") as GeoJSONSource)?.setData(lineFeature([]));
   (map.getSource("route-points") as GeoJSONSource)?.setData({ type: "FeatureCollection", features: [] });
+  (map.getSource("candidate-stations") as GeoJSONSource)?.setData({ type: "FeatureCollection", features: [] });
 }
 
 function updateUserLocation(map: MapLibreMap, origin: Coordinate | null): void {
@@ -166,7 +232,7 @@ function updateUserLocation(map: MapLibreMap, origin: Coordinate | null): void {
   );
 }
 
-function updateMapRoute(map: MapLibreMap, option: RouteOption, origin: Coordinate, destination: Coordinate): void {
+function updateMapRoute(map: MapLibreMap, option: RouteOption, origin: Coordinate, destination: Coordinate, candidates: FeatureCollection): void {
   (map.getSource("walk-pickup") as GeoJSONSource).setData(lineFeature(option.legs.walk_to_pickup.coordinates));
   (map.getSource("bike-route") as GeoJSONSource).setData(lineFeature(option.legs.bike.coordinates));
   (map.getSource("walk-dropoff") as GeoJSONSource).setData(lineFeature(option.legs.walk_to_destination.coordinates));
@@ -174,11 +240,10 @@ function updateMapRoute(map: MapLibreMap, option: RouteOption, origin: Coordinat
     type: "FeatureCollection",
     features: [
       pointFeature(origin, "origin").features[0],
-      pointFeature(option.pickup.coordinates, "pickup").features[0],
-      pointFeature(option.dropoff.coordinates, "dropoff").features[0],
       pointFeature(destination, "destination").features[0]
     ]
   });
+  (map.getSource("candidate-stations") as GeoJSONSource).setData(candidates);
   const bounds = new maplibregl.LngLatBounds();
   for (const coordinate of allCoordinates(option)) bounds.extend(coordinate);
   map.fitBounds(bounds, { padding: mapFitPadding(), maxZoom: 15, duration: 700 });
@@ -253,9 +318,10 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [selectedMapStation, setSelectedMapStation] = useState<NearbyStation | null>(null);
   const selectedRoute = routes?.options[selectedIndex];
 
-  const requestRoutes = useCallback(async (nextOrigin: Coordinate | null = origin, nextDestination: Coordinate | null = destination) => {
+  const requestRoutes = useCallback(async (nextOrigin: Coordinate | null = origin, nextDestination: Coordinate | null = destination, nextPreference: BikePreference = preference, stationChoice?: { kind: "pickup" | "dropoff"; stationId: string }) => {
     if (!nextOrigin || !nextDestination) return;
     if (!inCoverage(nextOrigin) || !inCoverage(nextDestination)) {
       setRoutes(null);
@@ -269,9 +335,10 @@ function App() {
     setError(null);
     setShowTurns(false);
     try {
-      const response = await fetchRoutes(nextOrigin, nextDestination, preference, controller.signal);
+      const response = await fetchRoutes(nextOrigin, nextDestination, nextPreference, controller.signal, stationChoice);
       setRoutes(response);
       setSelectedIndex(0);
+      setSelectedMapStation(null);
     } catch (requestError) {
       if ((requestError as Error).name !== "AbortError") {
         const message = (requestError as Error).message;
@@ -304,6 +371,26 @@ function App() {
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!map || !mapReady) return;
+    const selectCandidate = (event: maplibregl.MapLayerMouseEvent) => {
+      const properties = event.features?.[0]?.properties;
+      const station = routes?.nearby_stations?.find((candidate) => candidate.station_id === properties?.stationId && candidate.kind === properties?.kind);
+      if (station) setSelectedMapStation(station);
+    };
+    const showPointer = () => { map.getCanvas().style.cursor = "pointer"; };
+    const hidePointer = () => { map.getCanvas().style.cursor = ""; };
+    map.on("click", "candidate-station-halo", selectCandidate);
+    map.on("mouseenter", "candidate-station-halo", showPointer);
+    map.on("mouseleave", "candidate-station-halo", hidePointer);
+    return () => {
+      map.off("click", "candidate-station-halo", selectCandidate);
+      map.off("mouseenter", "candidate-station-halo", showPointer);
+      map.off("mouseleave", "candidate-station-halo", hidePointer);
+    };
+  }, [mapReady, routes]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!map) return;
     const handleClick = (event: maplibregl.MapMouseEvent) => {
       if (!mapPickMode) return;
@@ -332,8 +419,8 @@ function App() {
       clearMapRoute(mapRef.current);
       return;
     }
-    updateMapRoute(mapRef.current, selectedRoute, origin, destination);
-  }, [destination, mapReady, origin, selectedRoute]);
+    updateMapRoute(mapRef.current, selectedRoute, origin, destination, stationFeatures(routes, selectedIndex, preference));
+  }, [destination, mapReady, origin, preference, routes, selectedIndex, selectedRoute]);
 
   useEffect(() => {
     if (!destinationFocused) return;
@@ -485,9 +572,13 @@ function App() {
 
         <div className="preference-row">
           <span>Bike</span>
-          <div className="segmented" aria-label="Bike preference">
+          <div className={`segmented preference-${preference}`} aria-label="Bike preference">
             {(["any", "ebike", "regular"] as BikePreference[]).map((value) => (
-              <button type="button" key={value} className={preference === value ? "active" : ""} onClick={() => setPreference(value)}>
+              <button type="button" key={value} className={preference === value ? "active" : ""} aria-pressed={preference === value} onClick={() => {
+                setPreference(value);
+                if (origin && destination) void requestRoutes(origin, destination, value);
+              }}>
+                {value === "ebike" && <Zap size={12} fill="currentColor" />}
                 {value === "any" ? "Any" : value === "ebike" ? "E-bike" : "Regular"}
               </button>
             ))}
@@ -524,7 +615,16 @@ function App() {
                 <small><Route size={14} /> {formatDistance(option.total_walk_m)} walk <i /> Comfort {option.comfort_score}</small>
               </span>
               <span className="availability">
-                <span><Bike size={15} /><strong>{option.pickup.available_bikes}</strong></span>
+                {preference === "any" ? (
+                  <span className="bike-split" aria-label={`${option.pickup.available_regular_bikes} regular bikes and ${option.pickup.available_ebikes} e-bikes`}>
+                    <Bike size={15} /><strong>{option.pickup.available_regular_bikes}</strong><Zap size={12} fill="currentColor" /><strong>{option.pickup.available_ebikes}</strong>
+                  </span>
+                ) : (
+                  <span className={preference === "ebike" ? "ebike-count" : undefined}>
+                    {preference === "ebike" ? <Zap size={14} fill="currentColor" /> : <Bike size={15} />}
+                    <strong>{preference === "ebike" ? option.pickup.available_ebikes : option.pickup.available_regular_bikes}</strong>
+                  </span>
+                )}
                 <span className="dock-icon" aria-label="Open docks"><CircleParking size={13} strokeWidth={2.4} /></span>
                 <strong>{option.dropoff.available_docks}</strong>
               </span>
@@ -547,6 +647,20 @@ function App() {
           </div>
         )}
       </section>
+
+      {selectedMapStation && (
+        <aside className={`station-popover ${selectedMapStation.kind}`} aria-label={`${selectedMapStation.name} BIXI station`}>
+          <button type="button" className="station-popover-close" onClick={() => setSelectedMapStation(null)} aria-label="Close station details"><X size={17} /></button>
+          <small>{selectedMapStation.kind === "pickup" ? "Nearby pickup" : "Nearby return"} · {formatDistance(selectedMapStation.walk_distance_m)} walk</small>
+          <strong>{selectedMapStation.name}</strong>
+          <div className="station-stats">
+            <span><Bike size={15} /><b>{selectedMapStation.available_regular_bikes}</b><small>Regular</small></span>
+            <span className="electric"><Zap size={14} fill="currentColor" /><b>{selectedMapStation.available_ebikes}</b><small>E-bikes</small></span>
+            <span className="docks"><CircleParking size={15} /><b>{selectedMapStation.available_docks}</b><small>Docks</small></span>
+          </div>
+          <div className="station-popover-foot"><span>{timeAgo(selectedMapStation.availability_updated_at)}</span><button type="button" onClick={() => void requestRoutes(origin, destination, preference, { kind: selectedMapStation.kind, stationId: selectedMapStation.station_id })}>Use this {selectedMapStation.kind}</button></div>
+        </aside>
+      )}
 
       {mapPickMode && <div className="map-pick-banner"><MapPin size={18} /><span>Tap the map to set your destination</span><button type="button" onClick={() => setMapPickMode(false)}><X size={18} /></button></div>}
       {showTurns && selectedRoute && <TurnList option={selectedRoute} onClose={() => setShowTurns(false)} />}

@@ -154,8 +154,9 @@ button { color: inherit; }
 .preference-row { display: flex; align-items: center; gap: 9px; padding: 9px 0; }
 .preference-row > span { color: #687279; font-size: 11px; font-weight: 800; text-transform: uppercase; }
 .segmented { display: grid; grid-template-columns: repeat(3, 1fr); flex: 1; max-width: 260px; padding: 2px; border: 1px solid #d8ddd9; border-radius: 6px; background: #e9ece9; }
-.segmented button { min-height: 29px; padding: 4px 9px; border: 0; border-radius: 4px; background: transparent; color: #667078; font-size: 11px; font-weight: 750; cursor: pointer; }
+.segmented button { display: flex; min-height: 29px; align-items: center; justify-content: center; gap: 3px; padding: 4px 9px; border: 0; border-radius: 4px; background: transparent; color: #667078; font-size: 11px; font-weight: 750; cursor: pointer; }
 .segmented button.active { background: #fff; color: #20262d; box-shadow: 0 1px 4px rgba(30, 38, 43, 0.12); }
+.segmented.preference-ebike button.active { color: #a34b00; }
 .refresh-button { width: 34px; height: 34px; margin-left: auto; }
 .refresh-button:disabled { opacity: 0.55; }
 .spin { animation: spin 0.9s linear infinite; }
@@ -192,6 +193,8 @@ button { color: inherit; }
 .availability { display: flex; align-items: center; gap: 4px; color: #4f5a61; font-size: 11px; }
 .availability > span { display: flex; align-items: center; gap: 2px; }
 .availability svg { color: #165df5; }
+.availability .bike-split { gap: 2px; }
+.availability .bike-split svg:nth-of-type(2), .availability .ebike-count svg { color: #e06b00; }
 .dock-icon {
   display: grid !important;
   place-items: center;
@@ -206,10 +209,26 @@ button { color: inherit; }
 .route-skeleton { height: 52px; border-radius: 6px; background: linear-gradient(90deg, #e8ece8, #f4f6f3, #e8ece8); background-size: 200% 100%; animation: shimmer 1.3s infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
-.mobile-directions-button { display: flex; flex: 0 0 39px; align-items: center; gap: 7px; margin-top: 7px; padding: 0 10px; border: 0; border-radius: 6px; background: #20262d; color: #fff; font-size: 12px; font-weight: 750; cursor: pointer; }
-.mobile-directions-button strong { margin-left: auto; font-size: 11px; }
+.mobile-directions-button { display: grid; grid-template-columns: 20px 1fr auto 18px; flex: 0 0 42px; align-items: center; column-gap: 8px; margin-top: 8px; padding: 0 12px 0 11px; border: 0; border-radius: 7px; background: #20262d; color: #fff; font-size: 12px; font-weight: 750; cursor: pointer; text-align: left; }
+.mobile-directions-button > svg { justify-self: center; }
+.mobile-directions-button > svg:last-child { justify-self: end; }
+.mobile-directions-button strong { font-size: 11px; font-variant-numeric: tabular-nums; }
 
 .station-strip { display: none; }
+.station-popover { position: absolute; z-index: 7; right: 14px; bottom: calc(49vh + 16px); left: 14px; display: grid; gap: 4px; max-width: 360px; padding: 13px 14px 12px; border: 1px solid #cfd6d1; border-left: 4px solid #165df5; border-radius: 9px; background: rgba(255,255,255,.98); box-shadow: 0 8px 28px rgba(25,34,39,.2); }
+.station-popover.dropoff { border-left-color: #08a66c; }
+.station-popover > small { padding-right: 28px; color: #6a747a; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.station-popover > strong { padding-right: 28px; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.station-popover-close { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.station-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 5px; }
+.station-stats > span { display: grid; grid-template-columns: 18px auto; align-items: center; padding: 7px 8px; border-radius: 6px; background: #f2f4f1; color: #165df5; }
+.station-stats b { color: #20262d; font-size: 14px; }
+.station-stats small { grid-column: 1 / -1; margin-top: 2px; color: #707a80; font-size: 9px; }
+.station-stats .electric { color: #e06b00; }
+.station-stats .docks { color: #087c55; }
+.station-popover-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
+.station-popover-foot > span { color: #768087; font-size: 9px; }
+.station-popover-foot button { min-height: 30px; padding: 5px 10px; border: 0; border-radius: 5px; background: #20262d; color: #fff; font-size: 10px; font-weight: 800; cursor: pointer; }
 .map-pick-banner { position: absolute; z-index: 8; top: 72px; left: 50%; display: flex; align-items: center; gap: 8px; transform: translateX(-50%); padding: 9px 10px 9px 12px; border-radius: 6px; background: #20262d; color: #fff; box-shadow: 0 5px 18px rgba(0,0,0,.24); font-size: 12px; font-weight: 750; white-space: nowrap; }
 .map-pick-banner button { display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: #fff; cursor: pointer; }
 .is-picking .map { cursor: crosshair; }
@@ -283,10 +302,12 @@ button { color: inherit; }
   .station-dot { width: 9px; height: 9px; margin-top: 4px; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 0 0 1px currentColor; }
   .pickup-dot { color: #165df5; background: #165df5; }
   .dropoff-dot { color: #08a66c; background: #08a66c; }
-  .directions-button { display: flex; align-items: center; justify-content: center; gap: 8px; height: 42px; border: 0; border-radius: 6px; background: #20262d; color: #fff; font-size: 13px; font-weight: 750; cursor: pointer; }
-  .directions-button svg:last-child { margin-left: auto; }
+  .directions-button { display: grid; grid-template-columns: 20px 1fr 18px; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border: 0; border-radius: 7px; background: #20262d; color: #fff; font-size: 13px; font-weight: 750; cursor: pointer; text-align: left; }
+  .directions-button svg { justify-self: center; }
+  .directions-button svg:last-child { justify-self: end; }
   .turn-sheet { inset: 0 auto 0 390px; width: 390px; border-radius: 0; border-left: 1px solid #d8ddd9; }
   .map-pick-banner { left: calc(50% + 195px); }
+  .station-popover { right: 18px; bottom: 18px; left: auto; width: 340px; }
 }
 
 @media (max-height: 720px) and (max-width: 799px) {

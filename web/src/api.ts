@@ -11,7 +11,8 @@ export async function fetchRoutes(
   origin: Coordinate,
   destination: Coordinate,
   bikePreference: BikePreference,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  stationChoice?: { kind: "pickup" | "dropoff"; stationId: string }
 ): Promise<RouteResponse> {
   const params = new URLSearchParams({
     origin: `${origin[1]},${origin[0]}`,
@@ -20,6 +21,7 @@ export async function fetchRoutes(
     max_walk_minutes: "15",
     options: "3"
   });
+  if (stationChoice) params.set(`${stationChoice.kind}_station_id`, stationChoice.stationId);
   const response = await fetch(`${API_URL}/v1/routes/bixi?${params}`, { signal });
   if (!response.ok) throw new Error(await readError(response, "Route request failed"));
   return response.json() as Promise<RouteResponse>;

@@ -47,6 +47,11 @@ export interface DropoffStation {
   availability_updated_at?: string;
 }
 
+export interface NearbyStation extends PickupStation {
+  available_docks: number;
+  kind: "pickup" | "dropoff";
+}
+
 export interface RouteOption {
   estimated_total_minutes: number;
   total_walk_m: number;
@@ -68,4 +73,5 @@ export interface RouteResponse {
   bike_preference: BikePreference;
   max_walk_minutes: number;
   options: RouteOption[];
+  nearby_stations: NearbyStation[];
 }
