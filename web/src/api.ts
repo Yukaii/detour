@@ -1,4 +1,4 @@
-import type { BikePreference, Coordinate, PlaceResult, RouteResponse } from "./types";
+import type { BikePreference, BixiStationsResponse, Coordinate, PlaceResult, RouteResponse } from "./types";
 
 const API_URL = import.meta.env.VITE_DETOUR_API_URL ?? "https://detour-montreal-api.fly.dev";
 
@@ -54,4 +54,10 @@ export async function reverseGeocode(coordinate: Coordinate, signal?: AbortSigna
     };
   }
   return response.json() as Promise<PlaceResult>;
+}
+
+export async function fetchBixiStations(signal?: AbortSignal): Promise<BixiStationsResponse> {
+  const response = await fetch(`${API_URL}/v1/stations/bixi`, { signal });
+  if (!response.ok) throw new Error(await readError(response, "Station request failed"));
+  return response.json() as Promise<BixiStationsResponse>;
 }

@@ -35,6 +35,7 @@ from detour_router import (
     bixi_option_payload,
     bixi_route_plan,
     bixi_route_options,
+    load_bixi_stations,
     load_prepared_graph,
     parse_lat_lon,
 )
@@ -152,6 +153,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
 settings = Settings.from_env()
 route_cache = TtlCache()
 places_cache = TtlCache()
+stations_cache = TtlCache()
 
 
 @asynccontextmanager
@@ -317,6 +319,29 @@ def bixi_response(
         "options": [bixi_option_payload(result, bike_graph, walk_graph) for result in results],
         "nearby_stations": [station_payload(station, "pickup") for station in pickups]
         + [station_payload(station, "dropoff") for station in dropoffs],
+    }
+
+
+def bixi_stations_response() -> dict[str, Any]:
+    """Return the live BIXI network for the station explorer."""
+    stations = load_bixi_stations(DEFAULT_BIXI_GBFS_URL, "en")
+    return {
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "stations": [
+            {
+                "station_id": station["station_id"],
+                "name": station["name"],
+                "coordinates": [station["point"][1], station["point"][0]],
+                "available_bikes": int(station.get("num_bikes_available", 0)),
+                "available_regular_bikes": int(station.get("available_regular_bikes", 0)),
+                "available_ebikes": int(station.get("num_ebikes_available", 0)),
+                "available_docks": int(station.get("num_docks_available", 0)),
+                "is_renting": bool(station.get("is_renting")),
+                "is_returning": bool(station.get("is_returning")),
+                "availability_updated_at": datetime.fromtimestamp(float(station["last_reported"]), tz=UTC).isoformat().replace("+00:00", "Z") if station.get("last_reported") else None,
+            }
+            for station in stations
+        ],
     }
 
 
@@ -506,6 +531,20 @@ def bixi_routes(
             "Cache-Control": f"private, max-age={settings.route_cache_ttl_seconds}",
             "X-Detour-Cache": "HIT" if cache_hit else "MISS",
         },
+    )
+
+
+@app.get("/v1/stations/bixi")
+def bixi_stations() -> JSONResponse:
+    try:
+        payload, cache_hit = stations_cache.get_or_set(
+            ("bixi_stations",), settings.route_cache_ttl_seconds, bixi_stations_response
+        )
+    except (RuntimeError, TimeoutError, URLError) as error:
+        raise HTTPException(status_code=503, detail=f"Station data is temporarily unavailable: {error}") from error
+    return JSONResponse(
+        content=payload,
+        headers={"Cache-Control": f"private, max-age={settings.route_cache_ttl_seconds}", "X-Detour-Cache": "HIT" if cache_hit else "MISS"},
     )
 
 

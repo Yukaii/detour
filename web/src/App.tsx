@@ -21,8 +21,8 @@ import {
   Zap,
   X
 } from "lucide-react";
-import { fetchRoutes, reverseGeocode, searchPlaces } from "./api";
-import type { BikePreference, Coordinate, NearbyStation, PlaceResult, RouteLeg, RouteOption, RouteResponse, RouteStep } from "./types";
+import { fetchBixiStations, fetchRoutes, reverseGeocode, searchPlaces } from "./api";
+import type { BikePreference, BixiStation, Coordinate, NearbyStation, PlaceResult, RouteLeg, RouteOption, RouteResponse, RouteStep } from "./types";
 
 const MAP_CENTER: Coordinate = [-73.604, 45.522];
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json";
@@ -94,6 +94,26 @@ function stationFeatures(routes: RouteResponse | null, selectedIndex: number, pr
         geometry: { type: "Point" as const, coordinates: station.coordinates }
       }];
     })
+  };
+}
+
+function explorerStationFeatures(stations: BixiStation[], preference: BikePreference, filter: "all" | "bikes" | "docks", selectedId: string | null): FeatureCollection {
+  return {
+    type: "FeatureCollection",
+    features: stations.filter((station) => {
+      if (filter === "bikes") return preference === "ebike" ? station.available_ebikes > 0 : preference === "regular" ? station.available_regular_bikes > 0 : station.available_bikes > 0;
+      return filter !== "docks" || station.available_docks > 0;
+    }).map((station) => ({
+      type: "Feature" as const,
+      properties: {
+        kind: "pickup",
+        stationId: station.station_id,
+        selected: station.station_id === selectedId ? 1 : 0,
+        count: filter === "docks" ? station.available_docks : preference === "ebike" ? station.available_ebikes : preference === "regular" ? station.available_regular_bikes : station.available_bikes,
+        availabilityLabel: filter === "docks" ? "DOCKS" : preference === "ebike" ? "E-BIKES" : preference === "regular" ? "REGULAR" : "BIKES"
+      },
+      geometry: { type: "Point" as const, coordinates: station.coordinates }
+    }))
   };
 }
 
@@ -446,6 +466,13 @@ function App() {
   const [searchResults, setSearchResults] = useState<PlaceResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [selectedMapStation, setSelectedMapStation] = useState<NearbyStation | null>(null);
+  const [viewMode, setViewMode] = useState<"plan" | "explore">("plan");
+  const [explorerStations, setExplorerStations] = useState<BixiStation[]>([]);
+  const [explorerUpdatedAt, setExplorerUpdatedAt] = useState<string | undefined>();
+  const [explorerLoading, setExplorerLoading] = useState(false);
+  const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
+  const [explorerFilter, setExplorerFilter] = useState<"all" | "bikes" | "docks">("all");
+  const [selectedExplorerStation, setSelectedExplorerStation] = useState<BixiStation | null>(null);
   const [navigationActive, setNavigationActive] = useState(false);
   const [navigationLocation, setNavigationLocation] = useState<Coordinate | null>(null);
   const [navigationStepIndex, setNavigationStepIndex] = useState(0);
@@ -515,8 +542,13 @@ function App() {
     if (!map || !mapReady) return;
     const selectCandidate = (event: maplibregl.MapLayerMouseEvent) => {
       const properties = event.features?.[0]?.properties;
-      const station = routes?.nearby_stations?.find((candidate) => candidate.station_id === properties?.stationId && candidate.kind === properties?.kind);
-      if (station) setSelectedMapStation(station);
+      if (viewMode === "explore") {
+        const station = explorerStations.find((candidate) => candidate.station_id === properties?.stationId);
+        if (station) setSelectedExplorerStation(station);
+      } else {
+        const station = routes?.nearby_stations?.find((candidate) => candidate.station_id === properties?.stationId && candidate.kind === properties?.kind);
+        if (station) setSelectedMapStation(station);
+      }
     };
     const showPointer = () => { map.getCanvas().style.cursor = "pointer"; };
     const hidePointer = () => { map.getCanvas().style.cursor = ""; };
@@ -542,7 +574,19 @@ function App() {
       map.off("mouseenter", "candidate-station-clusters", showPointer);
       map.off("mouseleave", "candidate-station-clusters", hidePointer);
     };
-  }, [mapReady, routes]);
+  }, [explorerStations, mapReady, routes, viewMode]);
+
+  useEffect(() => {
+    if (viewMode !== "explore") return;
+    const controller = new AbortController();
+    setExplorerLoading(true);
+    setError(null);
+    void fetchBixiStations(controller.signal)
+      .then((response) => { setExplorerStations(response.stations); setExplorerUpdatedAt(response.generated_at); })
+      .catch((requestError) => { if ((requestError as Error).name !== "AbortError") setError((requestError as Error).message); })
+      .finally(() => setExplorerLoading(false));
+    return () => controller.abort();
+  }, [explorerRefreshKey, viewMode]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -584,12 +628,20 @@ function App() {
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     updateUserLocation(mapRef.current, origin);
+    if (viewMode === "explore") {
+      (mapRef.current.getSource("walk-pickup") as GeoJSONSource)?.setData(lineFeature([]));
+      (mapRef.current.getSource("bike-route") as GeoJSONSource)?.setData(lineFeature([]));
+      (mapRef.current.getSource("walk-dropoff") as GeoJSONSource)?.setData(lineFeature([]));
+      (mapRef.current.getSource("route-points") as GeoJSONSource)?.setData({ type: "FeatureCollection", features: [] });
+      (mapRef.current.getSource("candidate-stations") as GeoJSONSource)?.setData(explorerStationFeatures(explorerStations, preference, explorerFilter, selectedExplorerStation?.station_id ?? null));
+      return;
+    }
     if (!selectedRoute || !origin || !destination) {
       updateMapEndpoints(mapRef.current, origin, destination, loading);
       return;
     }
     updateMapRoute(mapRef.current, selectedRoute, origin, destination, stationFeatures(routes, selectedIndex, preference));
-  }, [destination, loading, mapReady, origin, preference, routes, selectedIndex, selectedRoute]);
+  }, [destination, explorerFilter, explorerStations, loading, mapReady, origin, preference, routes, selectedExplorerStation, selectedIndex, selectedRoute, viewMode]);
 
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
@@ -855,6 +907,9 @@ function App() {
 
       <header className="top-bar">
         <div className="mobile-brand"><Wordmark /></div>
+        <button type="button" className="mode-button" aria-pressed={viewMode === "explore"} onClick={() => { setViewMode(viewMode === "plan" ? "explore" : "plan"); setSelectedMapStation(null); setSelectedExplorerStation(null); }}>
+          <CircleParking size={17} />{viewMode === "plan" ? "Explore BIXI" : "Plan a trip"}
+        </button>
         <button type="button" className="icon-button coverage-button" aria-label="Center map" onClick={() => mapRef.current?.flyTo({ center: origin ?? MAP_CENTER, zoom: origin ? 14 : 12.4 })}>
           <Crosshair size={19} />
         </button>
@@ -900,7 +955,7 @@ function App() {
         </div>
       )}
 
-      <section className="planner" aria-label="Route planner">
+      {viewMode === "plan" && <section className="planner" aria-label="Route planner">
         <div className="planner-handle" />
         <div className="planner-brand"><Wordmark /></div>
         <div className="location-stack">
@@ -1075,7 +1130,18 @@ function App() {
             </div>
           </div>
         )}
-      </section>
+      </section>}
+
+      {viewMode === "explore" && (
+        <section className="explorer-panel" aria-label="BIXI station explorer">
+          <div className="planner-handle" />
+          <div className="explorer-head"><span><small>Live BIXI network</small><strong>{explorerLoading ? "Loading stations…" : `${explorerStations.length} stations`}</strong></span><button type="button" className="refresh-button" onClick={() => setExplorerRefreshKey((key) => key + 1)} disabled={explorerLoading} aria-label="Refresh station availability"><RefreshCw className={explorerLoading ? "spin" : ""} size={18} /></button></div>
+          <div className="explorer-filters" aria-label="Station availability filter">
+            {(["all", "bikes", "docks"] as const).map((filter) => <button type="button" key={filter} className={explorerFilter === filter ? "active" : ""} onClick={() => setExplorerFilter(filter)}>{filter === "all" ? "All stations" : filter === "bikes" ? "Has bikes" : "Has docks"}</button>)}
+          </div>
+          <p>{explorerLoading ? "Checking the live BIXI feed…" : `Tap a point for availability${explorerUpdatedAt ? ` · ${timeAgo(explorerUpdatedAt)}` : ""}`}</p>
+        </section>
+      )}
 
       {navigationActive && displayedNavigationStep && selectedRoute && (
         <section className="navigation-hud" aria-label="Live navigation">
@@ -1129,6 +1195,20 @@ function App() {
             <span className="docks"><CircleParking size={15} /><b>{selectedMapStation.available_docks}</b><small>Docks</small></span>
           </div>
           <div className="station-popover-foot"><span>{timeAgo(selectedMapStation.availability_updated_at)}</span><button type="button" onClick={() => void requestRoutes(origin, destination, preference, { kind: selectedMapStation.kind, stationId: selectedMapStation.station_id })}>Use this {selectedMapStation.kind}</button></div>
+        </aside>
+      )}
+
+      {selectedExplorerStation && viewMode === "explore" && (
+        <aside className="station-popover" aria-label={`${selectedExplorerStation.name} BIXI station`}>
+          <button type="button" className="station-popover-close" onClick={() => setSelectedExplorerStation(null)} aria-label="Close station details"><X size={17} /></button>
+          <small>Live station availability</small>
+          <strong>{selectedExplorerStation.name}</strong>
+          <div className="station-stats">
+            <span><Bike size={15} /><b>{selectedExplorerStation.available_regular_bikes}</b><small>Regular</small></span>
+            <span className="electric"><Zap size={14} fill="currentColor" /><b>{selectedExplorerStation.available_ebikes}</b><small>E-bikes</small></span>
+            <span className="docks"><CircleParking size={15} /><b>{selectedExplorerStation.available_docks}</b><small>Docks</small></span>
+          </div>
+          <div className="station-popover-foot"><span>{timeAgo(selectedExplorerStation.availability_updated_at)}</span><button type="button" onClick={() => { setOrigin(selectedExplorerStation.coordinates); setOriginLabel(selectedExplorerStation.name); setOriginSearchQuery(selectedExplorerStation.name); if (destination) void requestRoutes(selectedExplorerStation.coordinates, destination); setSelectedExplorerStation(null); setViewMode("plan"); }}>Plan from here</button></div>
         </aside>
       )}
 

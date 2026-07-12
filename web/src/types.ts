@@ -52,6 +52,24 @@ export interface NearbyStation extends PickupStation {
   kind: "pickup" | "dropoff";
 }
 
+export interface BixiStation {
+  station_id: string;
+  name: string;
+  coordinates: Coordinate;
+  available_bikes: number;
+  available_regular_bikes: number;
+  available_ebikes: number;
+  available_docks: number;
+  is_renting: boolean;
+  is_returning: boolean;
+  availability_updated_at?: string;
+}
+
+export interface BixiStationsResponse {
+  generated_at: string;
+  stations: BixiStation[];
+}
+
 export interface RouteOption {
   estimated_total_minutes: number;
   total_walk_m: number;
