@@ -17,12 +17,25 @@ The API listens on `http://localhost:8001`. Docker volumes persist the downloade
 | `DETOUR_RATE_LIMIT_PER_MINUTE` | `30` | Per-client request ceiling in the single API process. |
 | `DETOUR_MAX_ROUTE_DISTANCE_KM` | `35` | Maximum straight-line distance between route endpoints. |
 | `DETOUR_GRAPH_MANIFEST_PATH` | `data/graphs/manifest.json` | Versioned prepared-graph bundle loaded by the API. |
+| `DETOUR_ROUTING_PROVIDER` | `osm` | Bicycle-leg provider: `osm` or `valhalla`. Docker Compose overrides this to `valhalla`. |
+| `DETOUR_VALHALLA_URL` | `http://valhalla:8002` | Base URL of the private Valhalla service. |
+| `DETOUR_VALHALLA_TIMEOUT_SECONDS` | `10` | Timeout for Valhalla matrix and route requests. |
 | `DETOUR_TRAFFIC_RESTRICTIONS_ENABLED` | `false` | Enable polling of the configured CIFS-compatible restriction feed. Keep disabled until a working Montréal endpoint is verified. |
 | `DETOUR_TRAFFIC_RESTRICTIONS_URL` | empty | HTTPS URL for the CIFS-compatible JSON feed. |
 | `DETOUR_TRAFFIC_RESTRICTIONS_TTL_SECONDS` | `90` | Per-process lifetime of a restriction snapshot. |
 | `DETOUR_TRAFFIC_RESTRICTIONS_STALE_SECONDS` | `300` | Maximum accepted age of a timestamped feed before restrictions fail open. |
 
 The v1 API accepts endpoints only inside the hard-coded Montréal service bounds. This prevents public requests from downloading arbitrary global OSM graphs and exhausting disk space. Expand the boundary deliberately as service coverage grows.
+
+## Valhalla graph lifecycle
+
+The Compose Valhalla service uses the official scripted image and stores tiles in the `valhalla-data` volume. On first startup it downloads the Québec Geofabrik extract and builds its routing graph. The API `/ready` endpoint reports `503` while a configured Valhalla service is unavailable; `/health` remains process liveness only.
+
+Override `DETOUR_VALHALLA_TILE_URLS` with a smaller maintained Montréal extract when one is available. Refreshing the source PBF and restarting the scripted image triggers its hash-based tile rebuild. Validate known routes before promoting refreshed tiles.
+
+In production, run Valhalla as a private service with persistent tile storage and point `DETOUR_VALHALLA_URL` at it. The existing Fly configuration deploys only the API container, so enabling Valhalla there requires provisioning that service separately. The Détour CIFS restriction overlay currently applies only to the legacy OSM route calculation; Valhalla responses disclose that limitation in `traffic_restrictions.detail`.
+
+The repository includes `fly.valhalla.toml` for a private Toronto deployment. It pins the Valhalla image, builds from the current Québec Geofabrik extract, and mounts `valhalla_data` at `/custom_files`. Create a 10 GB volume before the initial deployment; the first graph build uses a 4 GB machine and can be downsized after its peak memory and steady-state route latency are measured. The API reaches it over Fly's private network at `http://detour-montreal-valhalla.internal:8002`.
 
 ## Live traffic restriction overlay
 

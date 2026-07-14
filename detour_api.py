@@ -41,6 +41,7 @@ from detour_router import (
     route_edge_sequence,
 )
 from traffic_restrictions import RestrictionSnapshot, TrafficRestrictionProvider, restriction_weight
+from valhalla_router import ValhallaClient, bixi_valhalla_option_payload, bixi_valhalla_plan
 
 
 logger = logging.getLogger("detour.api")
@@ -60,6 +61,13 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def env_choice(name: str, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value not in choices:
+        raise ValueError(f"{name} must be one of: {', '.join(sorted(choices))}.")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     cors_origins: tuple[str, ...]
@@ -69,6 +77,9 @@ class Settings:
     max_route_distance_km: int
     graph_manifest_path: Path
     photon_url: str
+    routing_provider: str
+    valhalla_url: str
+    valhalla_timeout_seconds: int
     traffic_restrictions_enabled: bool
     traffic_restrictions_url: str
     traffic_restrictions_ttl_seconds: int
@@ -92,6 +103,9 @@ class Settings:
             max_route_distance_km=env_int("DETOUR_MAX_ROUTE_DISTANCE_KM", 35),
             graph_manifest_path=Path(os.getenv("DETOUR_GRAPH_MANIFEST_PATH", "data/graphs/manifest.json")),
             photon_url=os.getenv("DETOUR_PHOTON_URL", "https://photon.komoot.io").rstrip("/"),
+            routing_provider=env_choice("DETOUR_ROUTING_PROVIDER", "osm", {"osm", "valhalla"}),
+            valhalla_url=os.getenv("DETOUR_VALHALLA_URL", "http://valhalla:8002").rstrip("/"),
+            valhalla_timeout_seconds=env_int("DETOUR_VALHALLA_TIMEOUT_SECONDS", 10),
             traffic_restrictions_enabled=env_bool("DETOUR_TRAFFIC_RESTRICTIONS_ENABLED", False),
             traffic_restrictions_url=os.getenv("DETOUR_TRAFFIC_RESTRICTIONS_URL", ""),
             traffic_restrictions_ttl_seconds=env_int("DETOUR_TRAFFIC_RESTRICTIONS_TTL_SECONDS", 90),
@@ -180,6 +194,7 @@ traffic_restrictions = TrafficRestrictionProvider(
     ttl_seconds=settings.traffic_restrictions_ttl_seconds,
     stale_seconds=settings.traffic_restrictions_stale_seconds,
 )
+valhalla = ValhallaClient(settings.valhalla_url, settings.valhalla_timeout_seconds)
 
 
 @asynccontextmanager
@@ -322,16 +337,28 @@ def bixi_response(
 ) -> dict[str, Any]:
     args = router_args(origin, destination, bike_preference, max_walk_minutes, pickup_station_id, dropoff_station_id)
     bike_graph, walk_graph = prepared_graphs()
-    restriction_snapshot = restriction_snapshot or traffic_restrictions.snapshot(bike_graph)
-    bike_weight = restriction_weight("bike_path_first_cost", restriction_snapshot)
-    results, pickups, dropoffs = bixi_route_plan(
-        args, bike_graph, walk_graph, option_limit=options, bike_weight=bike_weight
-    )
-    route_edges = {
-        (u, v, key)
-        for result in results
-        for u, v, key, _ in route_edge_sequence(bike_graph, result["route"], bike_weight)
-    }
+    if settings.routing_provider == "valhalla":
+        results, pickups, dropoffs = bixi_valhalla_plan(args, walk_graph, valhalla, options)
+        option_payloads = [bixi_valhalla_option_payload(result, walk_graph) for result in results]
+        route_edges: set[tuple[Any, Any, Any]] = set()
+        restriction_snapshot = RestrictionSnapshot(
+            "valhalla-managed",
+            "disabled",
+            datetime.now(UTC),
+            detail="The Détour CIFS overlay is not applied to Valhalla routes.",
+        )
+    else:
+        restriction_snapshot = restriction_snapshot or traffic_restrictions.snapshot(bike_graph)
+        bike_weight = restriction_weight("bike_path_first_cost", restriction_snapshot)
+        results, pickups, dropoffs = bixi_route_plan(
+            args, bike_graph, walk_graph, option_limit=options, bike_weight=bike_weight
+        )
+        option_payloads = [bixi_option_payload(result, bike_graph, walk_graph) for result in results]
+        route_edges = {
+            (u, v, key)
+            for result in results
+            for u, v, key, _ in route_edge_sequence(bike_graph, result["route"], bike_weight)
+        }
     def station_payload(station: dict[str, Any], kind: str) -> dict[str, Any]:
         return {
             "station_id": station["station_id"],
@@ -348,11 +375,12 @@ def bixi_response(
     return {
         "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "mode": "bixi",
+        "routing_provider": settings.routing_provider,
         "origin": {"coordinates": [origin[1], origin[0]]},
         "destination": {"coordinates": [destination[1], destination[0]]},
         "bike_preference": bike_preference,
         "max_walk_minutes": max_walk_minutes,
-        "options": [bixi_option_payload(result, bike_graph, walk_graph) for result in results],
+        "options": option_payloads,
         "nearby_stations": [station_payload(station, "pickup") for station in pickups]
         + [station_payload(station, "dropoff") for station in dropoffs],
         "traffic_restrictions": restriction_snapshot.payload(route_edges),
@@ -526,12 +554,15 @@ def ready() -> JSONResponse:
     try:
         manifest, _, _ = graph_artifact_paths()
         prepared_graphs()
-    except RuntimeError as error:
+        if settings.routing_provider == "valhalla":
+            valhalla.status()
+    except (RuntimeError, TimeoutError, URLError) as error:
         return JSONResponse(status_code=503, content={"status": "not_ready", "service": "detour-api", "detail": str(error)})
     return JSONResponse(
         content={
             "status": "ready",
             "service": "detour-api",
+            "routing_provider": settings.routing_provider,
             "graph_version": manifest.get("version", "unknown"),
             "generated_at": manifest.get("generated_at"),
         }
@@ -552,11 +583,15 @@ def bixi_routes(
     parsed_destination = parse_point(destination, "destination")
     validate_route_request(parsed_origin, parsed_destination)
     try:
-        bike_graph = prepared_graphs()[0] if traffic_restrictions.enabled else None
-        restriction_snapshot = traffic_restrictions.snapshot(bike_graph)
+        bike_graph = prepared_graphs()[0] if traffic_restrictions.enabled and settings.routing_provider == "osm" else None
+        restriction_snapshot = (
+            traffic_restrictions.snapshot(bike_graph)
+            if settings.routing_provider == "osm"
+            else RestrictionSnapshot("valhalla-managed", "disabled", datetime.now(UTC))
+        )
         cache_key = (
             parsed_origin, parsed_destination, bike_preference, max_walk_minutes, options,
-            pickup_station_id, dropoff_station_id, restriction_snapshot.version,
+            pickup_station_id, dropoff_station_id, settings.routing_provider, restriction_snapshot.version,
         )
         payload, cache_hit = route_cache.get_or_set(
             cache_key,

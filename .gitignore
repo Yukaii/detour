@@ -2,6 +2,11 @@
 __pycache__/
 .DS_Store
 
+# Local configuration and credentials. Keep only sanitized examples in Git.
+.env
+.env.*
+!.env.example
+
 # Generated OSM/route artifacts can be recreated by the CLI.
 cache/
 data/

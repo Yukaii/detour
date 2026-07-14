@@ -100,7 +100,18 @@ The BIXI endpoint returns up to five ranked station-pair options. Each option in
 
 Every leg also includes `steps[]`, generated from the exact OSM edges selected by Détour. A step contains an instruction, maneuver type, street name, distance, coordinate, and the selected OSM edge keys. This is the contract for the future iOS turn-list, progress tracking, and voice-guidance UI; it does not delegate route selection to Apple or Google Maps.
 
-Route responses also include `traffic_restrictions`. Phase 1 of the live restriction overlay is fail-open and disabled by default while Montréal's documented CIFS endpoint is unavailable. See [OPERATIONS.md](/Users/yukai/Projects/Personal/detour/OPERATIONS.md) for activation settings and safety boundaries.
+Route responses also include `traffic_restrictions`. Phase 1 of the live restriction overlay is fail-open and disabled by default while Montréal's documented CIFS endpoint is unavailable. See [OPERATIONS.md](OPERATIONS.md) for activation settings and safety boundaries.
+
+### Valhalla routing provider
+
+The API can use a self-hosted Valhalla instance for BIXI bicycle legs. Valhalla ranks the candidate pickup/drop-off matrix and returns the selected route geometry and maneuvers; Détour continues to own live BIXI availability and walking-station selection.
+
+```bash
+DETOUR_ROUTING_PROVIDER=valhalla
+DETOUR_VALHALLA_URL=http://valhalla:8002
+```
+
+`docker compose up --build` enables Valhalla by default. Its first startup downloads the Québec OSM extract and builds routing tiles, so it can take substantially longer than later starts. Set `DETOUR_ROUTING_PROVIDER=osm` to compare with the previous in-process router. Valhalla options currently target a city bike, prefer cycling infrastructure while allowing normal roads, heavily penalize gates and service roads, and avoid poor surfaces.
 
 Run the automated checks with:
 
@@ -114,7 +125,7 @@ For a single-container deployment, use:
 docker compose up --build
 ```
 
-See [OPERATIONS.md](/Users/yukai/Projects/Personal/detour/OPERATIONS.md) for configuration, operational boundaries, and the work still required before a multi-instance public deployment.
+See [OPERATIONS.md](OPERATIONS.md) for configuration, operational boundaries, and the work still required before a multi-instance public deployment.
 
 The public v1 API is intentionally limited to Montréal endpoints and trips of at most 35 km straight-line distance. This protects the graph downloader and persistent storage from arbitrary global requests.
 

@@ -1,0 +1,24 @@
+app = "detour-montreal-valhalla"
+primary_region = "yyz"
+
+[build]
+  image = "ghcr.io/valhalla/valhalla-scripted:3.8.2"
+
+[env]
+  tile_urls = "https://download.geofabrik.de/north-america/canada/quebec-latest.osm.pbf"
+  use_tiles_ignore_pbf = "True"
+  build_elevation = "False"
+  build_admins = "True"
+  build_time_zones = "True"
+  build_tar = "True"
+  server_threads = "2"
+  serve_tiles = "True"
+
+[[mounts]]
+  source = "valhalla_data"
+  destination = "/custom_files"
+
+[[vm]]
+  memory = "4gb"
+  cpu_kind = "shared"
+  cpus = 2
