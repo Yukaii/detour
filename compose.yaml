@@ -9,10 +9,27 @@ services:
       DETOUR_RATE_LIMIT_PER_MINUTE: ${DETOUR_RATE_LIMIT_PER_MINUTE:-30}
       DETOUR_MAX_ROUTE_DISTANCE_KM: ${DETOUR_MAX_ROUTE_DISTANCE_KM:-35}
       DETOUR_GRAPH_MANIFEST_PATH: ${DETOUR_GRAPH_MANIFEST_PATH:-data/graphs/manifest.json}
+      DETOUR_ROUTING_PROVIDER: ${DETOUR_ROUTING_PROVIDER:-valhalla}
+      DETOUR_VALHALLA_URL: ${DETOUR_VALHALLA_URL:-http://valhalla:8002}
+      DETOUR_VALHALLA_TIMEOUT_SECONDS: ${DETOUR_VALHALLA_TIMEOUT_SECONDS:-10}
     volumes:
       - detour-data:/app/data
       - detour-cache:/app/cache
+    depends_on:
+      - valhalla
+
+  valhalla:
+    image: ghcr.io/valhalla/valhalla-scripted:latest
+    ports:
+      - "8002:8002"
+    environment:
+      tile_urls: ${DETOUR_VALHALLA_TILE_URLS:-https://download.geofabrik.de/north-america/canada/quebec-latest.osm.pbf}
+      build_elevation: ${DETOUR_VALHALLA_BUILD_ELEVATION:-False}
+      server_threads: ${DETOUR_VALHALLA_SERVER_THREADS:-2}
+    volumes:
+      - valhalla-data:/custom_files
 
 volumes:
   detour-data:
   detour-cache:
+  valhalla-data:

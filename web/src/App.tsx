@@ -1156,7 +1156,10 @@ function App() {
               <span className="option-rank">{index + 1}</span>
               <span className="option-main">
                 <strong>{option.estimated_total_minutes} min</strong>
-                <small><Route size={14} /> {formatDistance(option.total_walk_m)} walk <i /> Comfort {option.comfort_score}</small>
+                <small>
+                  <Route size={14} /> {formatDistance(option.total_walk_m)} walk <i />
+                  {option.comfort_score === null ? "Valhalla bike route" : `Comfort ${option.comfort_score}`}
+                </small>
               </span>
               <span className="availability">
                 {preference === "any" ? (

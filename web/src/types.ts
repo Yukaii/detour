@@ -73,7 +73,7 @@ export interface BixiStationsResponse {
 export interface RouteOption {
   estimated_total_minutes: number;
   total_walk_m: number;
-  comfort_score: number;
+  comfort_score: number | null;
   pickup: PickupStation;
   dropoff: DropoffStation;
   legs: {
@@ -86,6 +86,7 @@ export interface RouteOption {
 export interface RouteResponse {
   generated_at: string;
   mode: "bixi";
+  routing_provider: "osm" | "valhalla";
   origin: { coordinates: Coordinate };
   destination: { coordinates: Coordinate };
   bike_preference: BikePreference;
