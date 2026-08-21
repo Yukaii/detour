@@ -199,16 +199,17 @@ valhalla = ValhallaClient(settings.valhalla_url, settings.valhalla_timeout_secon
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    started_at = time.perf_counter()
-    prepared_graphs()
-    logger.info(
-        json.dumps(
-            {
-                "event": "graphs_loaded",
-                "duration_ms": round((time.perf_counter() - started_at) * 1000, 1),
-            }
+    if env_bool("DETOUR_PRELOAD_GRAPHS", True):
+        started_at = time.perf_counter()
+        prepared_graphs()
+        logger.info(
+            json.dumps(
+                {
+                    "event": "graphs_loaded",
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 1),
+                }
+            )
         )
-    )
     yield
 
 

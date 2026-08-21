@@ -7,6 +7,8 @@ data
 routes
 preview
 tests
+.vercel
+.vercel-artifacts
 web/node_modules
 web/dist
 .DS_Store

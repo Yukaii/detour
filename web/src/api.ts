@@ -1,7 +1,7 @@
 import type { BikePreference, BixiStationsResponse, Coordinate, PlaceResult, RouteResponse } from "./types";
 
 const API_URL = import.meta.env.VITE_DETOUR_API_URL
-  ?? (import.meta.env.DEV ? "http://127.0.0.1:8001" : "https://detour-montreal-api.fly.dev");
+  ?? (import.meta.env.DEV ? "http://127.0.0.1:8001" : "https://detour-montreal.vercel.app");
 
 async function readError(response: Response, fallback: string): Promise<string> {
   const body = (await response.json().catch(() => null)) as { detail?: string } | null;

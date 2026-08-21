@@ -9,10 +9,17 @@ __pycache__/
 
 # Generated OSM/route artifacts can be recreated by the CLI.
 cache/
-data/
+data/*
+!data/graphs/
+data/graphs/*
+!data/graphs/manifest.json
+!data/graphs/*.graphml.gz
 routes/
+.vercel/
+.vercel-artifacts/
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts
+.env*
