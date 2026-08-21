@@ -1,0 +1,15 @@
+.DS_Store
+.git
+.pytest_cache
+.venv
+.vercel
+.vercel-artifacts
+__pycache__
+cache
+preview
+routes
+tests
+web
+
+data/*.graphml
+data/graphs/*.graphml

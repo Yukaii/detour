@@ -30,7 +30,7 @@ jobs:
         run: npm run build -- --base /
         working-directory: web
         env:
-          VITE_DETOUR_API_URL: https://detour-montreal-api.fly.dev
+          VITE_DETOUR_API_URL: https://detour-montreal.vercel.app
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

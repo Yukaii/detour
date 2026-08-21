@@ -1,0 +1,23 @@
+FROM ghcr.io/valhalla/valhalla-scripted:3.8.2
+
+COPY valhalla-runtime.env /tmp/valhalla-runtime.env
+COPY entrypoint.sh /usr/local/bin/detour-valhalla
+
+RUN set -eu \
+    && . /tmp/valhalla-runtime.env \
+    && curl -fsSL "$DETOUR_VALHALLA_BUNDLE_URL" -o /tmp/valhalla-runtime.tar.gz \
+    && printf '%s  %s\n' "$DETOUR_VALHALLA_BUNDLE_SHA256" /tmp/valhalla-runtime.tar.gz | sha256sum -c - \
+    && mkdir -p /custom_files \
+    && tar -xzf /tmp/valhalla-runtime.tar.gz -C /custom_files \
+    && rm /tmp/valhalla-runtime.tar.gz /tmp/valhalla-runtime.env \
+    && test -s /custom_files/valhalla.json \
+    && test -s /custom_files/default_speeds.json \
+    && test -s /custom_files/valhalla_tiles.tar \
+    && test -s /custom_files/admins.sqlite \
+    && test -s /custom_files/timezones.sqlite \
+    && chmod 755 /usr/local/bin/detour-valhalla
+
+ENV server_threads=2
+EXPOSE 80
+
+ENTRYPOINT ["/usr/local/bin/detour-valhalla"]

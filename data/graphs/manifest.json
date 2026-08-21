@@ -1,0 +1,24 @@
+{
+  "version": "20260712",
+  "generated_at": "2026-07-12T02:23:11.487413Z",
+  "bounds": {
+    "south": 45.48712829,
+    "west": -73.65120866,
+    "north": 45.55706171,
+    "east": -73.55682134
+  },
+  "files": {
+    "bike": "montreal-20260712-bike.graphml",
+    "walk": "montreal-20260712-walk.graphml"
+  },
+  "stats": {
+    "bike": {
+      "nodes": 14541,
+      "edges": 35435
+    },
+    "walk": {
+      "nodes": 45095,
+      "edges": 130800
+    }
+  }
+}

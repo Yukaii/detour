@@ -1,0 +1,30 @@
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DETOUR_GRAPH_MANIFEST_PATH=/app/data/graphs/manifest.json \
+    DETOUR_PRELOAD_GRAPHS=false \
+    DETOUR_ROUTING_PROVIDER=valhalla
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y gzip libgeos-dev libproj-dev libspatialindex-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+COPY detour_router.py detour_api.py prepare_graphs.py traffic_restrictions.py valhalla_router.py ./
+COPY data/graphs/manifest.json data/graphs/*.graphml.gz /app/data/graphs/
+
+RUN gunzip --keep /app/data/graphs/*.graphml.gz \
+    && useradd --create-home --uid 10001 detour \
+    && mkdir -p /app/cache \
+    && chown -R detour:detour /app
+
+USER detour
+EXPOSE 80
+
+CMD ["sh", "-c", "exec uvicorn detour_api:app --host 0.0.0.0 --port \"${PORT:-80}\" --workers 1"]

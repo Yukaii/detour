@@ -1,0 +1,11 @@
+*
+!requirements.txt
+!detour_router.py
+!detour_api.py
+!prepare_graphs.py
+!traffic_restrictions.py
+!valhalla_router.py
+!data/
+!data/graphs/
+!data/graphs/manifest.json
+!data/graphs/*.graphml.gz
